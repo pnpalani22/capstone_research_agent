@@ -193,10 +193,10 @@ def build_story(styles):
             [
                 ["Area", "Summary"],
                 ["Backend API", "FastAPI service in api.py exposes session, run start/resume, run snapshot, health, and translation endpoints."],
-                ["LangGraph Orchestration", "graph.py compiles a StateGraph with guardrails, history review, planning, search, reasoning, synthesis, human review, publishing, and persistence nodes."],
-                ["Workflow Logic", "nodes.py contains the actual node implementations, helper scoring/reranking utilities, report normalization, interrupt handling, and history persistence actions."],
+                ["LangGraph Orchestration", "graph.py compiles a StateGraph with guardrails, history review, planning, search, evidence selection, reasoning, synthesis, human review, publishing, and persistence nodes."],
+                ["Workflow Logic", "nodes.py contains the actual node implementations, helper scoring/reranking utilities, report normalization, interrupt handling, evidence selection, and history persistence actions."],
                 ["Contracts", "state.py defines graph state keys. schemas.py defines strict Pydantic request, response, interrupt, and LLM output models."],
-                ["External Tools", "tools.py creates Tavily and Wikipedia LangChain tools. graph.py allows only tools approved by guardrails."],
+                ["External Tools", "tools.py creates Tavily, Wikipedia, weather, news, politics, and sports LangChain tools. graph.py allows only tools approved by guardrails."],
             ],
             styles,
             [1.45 * inch, 5.35 * inch],
@@ -232,7 +232,7 @@ def build_story(styles):
                 "The frontend requests POST /api/sessions to create a thread_id.",
                 "The frontend posts a question to POST /api/runs/start.",
                 "api.py calls start_research_run from app.py, passing a LangGraph config containing the thread_id.",
-                "The graph executes until it completes or reaches an interrupt such as history review or draft approval.",
+                "The graph executes until it completes or reaches an interrupt such as history review, evidence selection, or draft approval.",
                 "api.py returns a RunSnapshotResponse containing status, guardrails, metrics, interrupt payload, draft, search results, or final report.",
                 "When the user chooses a decision, the frontend calls POST /api/runs/resume. app.py resumes the graph with Command(resume=...).",
             ],
@@ -270,7 +270,7 @@ def build_story(styles):
     flow.append(p("Main path", styles["Subsection"]))
     flow.append(
         p(
-            "START -> initialize_run_node -> evaluate_guardrails_node -> load_history_node -> history_review_node -> history_review_gate_node -> planner_node -> prepare_search_node -> tool_access_gate_node -> search_node -> tools -> capture_tool_results_node -> reason_node -> synthesise_node -> review_gate_node -> publish_node -> save_history_node -> END",
+            "START -> initialize_run_node -> evaluate_guardrails_node -> load_history_node -> history_review_node -> history_review_gate_node -> planner_node -> prepare_search_node -> tool_access_gate_node -> search_node -> tools -> capture_tool_results_node -> reason_node -> evidence_selection_gate_node -> synthesise_node -> review_gate_node -> publish_node -> save_history_node -> END",
             styles["CodeBlock"],
         )
     )
@@ -283,7 +283,8 @@ def build_story(styles):
                 ["After history gate", "proceed_with_context -> planner_node; start_fresh_plan -> planner_node; reuse_existing -> reuse_existing_report_node -> save_history_node -> END."],
                 ["After tool access gate", "continue -> search_node; blocked -> guardrail_block_node -> END."],
                 ["After search_node", "If the LLM requested tools, route to ToolNode; otherwise go directly to reason_node."],
-                ["After reason_node", "CONTINUE -> prepare_search_node for another loop; DONE -> synthesise_node."],
+                ["After reason_node", "CONTINUE -> prepare_search_node for another loop; DONE -> evidence_selection_gate_node when evidence exists, otherwise synthesise_node."],
+                ["After evidence selection gate", "User chooses one or more evidence items -> synthesise_node; no selection -> first evidence item is used as fallback."],
                 ["After review_gate_node", "approved -> publish_node; edited -> apply_edit_node -> publish_node; rejected -> planner_node."],
             ],
             styles,
@@ -295,6 +296,7 @@ def build_story(styles):
         bullets(
             [
                 "history_review_gate_node pauses when similar or related history exists and asks the user whether to reuse, proceed with context, or start fresh.",
+                "evidence_selection_gate_node pauses before synthesis and asks the user to choose which normalized evidence items should drive the report.",
                 "review_gate_node pauses before publishing and asks the user to approve, edit with feedback, or reject the draft.",
                 "MemorySaver stores checkpoints per thread_id, so a later resume request can continue from the paused point.",
                 "InMemoryStore stores shared research history while the backend process is alive; history_store.py also persists it to data/research_history.json.",
@@ -306,7 +308,7 @@ def build_story(styles):
     flow.append(p("4. What nodes.py Does", styles["Section"]))
     flow.append(
         p(
-            "nodes.py is the workflow engine. It contains small graph nodes plus helper functions for cleaning inputs, scoring history, normalizing tool output, deduplicating/reranking evidence, computing metrics, validating drafts, and saving history.",
+            "nodes.py is the workflow engine. It contains small graph nodes plus helper functions for cleaning inputs, scoring history, normalizing tool output, deduplicating/reranking evidence, gating evidence selection, computing metrics, validating drafts, and saving history.",
             styles["Body"],
         )
     )
@@ -325,9 +327,10 @@ def build_story(styles):
                 ["prepare_search_node", "Increments the loop iteration counter before a search round."],
                 ["capture_tool_results_node", "Reads ToolMessage outputs, normalizes Tavily/Wikipedia results, deduplicates evidence, and updates metrics."],
                 ["reason_node", "Decides whether the graph has enough evidence or should continue another search loop."],
-                ["synthesise_node", "Builds a structured DraftReportModel from accumulated evidence and history context."],
+                ["evidence_selection_gate_node", "Pauses the graph so the user can choose which evidence items should feed the report."],
+                ["synthesise_node", "Builds a structured DraftReportModel from selected evidence and history context."],
                 ["review_gate_node", "Raises the draft-review interrupt before publish."],
-                ["apply_edit_node", "Applies reviewer feedback to the draft summary before publishing."],
+                ["apply_edit_node", "Applies reviewer feedback to the draft summary before publishing. If comments accompany approval, the backend treats it as edited."],
                 ["publish_node", "Turns the draft into a polished FinalReportModel with published_report text."],
                 ["save_history_node", "Persists completed final reports into shared store and data/research_history.json unless the run reused history."],
             ],
@@ -343,12 +346,12 @@ def build_story(styles):
         table(
             [
                 ["Concept", "Defined in", "How it is used"],
-                ["ResearchState", "state.py", "Shared dictionary carried through every LangGraph node. It includes question, user_id, messages, iteration counters, history, evidence, draft_report, final_report, and metrics."],
+                ["ResearchState", "state.py", "Shared dictionary carried through every LangGraph node. It includes question, user_id, messages, iteration counters, history, evidence, selected evidence, draft_report, final_report, and metrics."],
                 ["messages", "state.py", "Annotated with add_messages so LangGraph appends messages across node updates."],
                 ["Guardrail models", "schemas.py", "Constrain guardrail status, action, risk flags, allowed tools, explanation, and clarification prompt."],
                 ["DraftReportModel and FinalReportModel", "schemas.py", "Validate generated draft/final reports and prevent malformed report structures from reaching the UI."],
                 ["HistoryReviewModel", "schemas.py", "Constrains the LLM's memory comparison output to match_type, rationale, and relevant history references."],
-                ["Interrupt models", "schemas.py", "HistoryInterruptModel and ReviewInterruptModel define the exact payload the frontend receives when the graph pauses."],
+                ["Interrupt models", "schemas.py", "HistoryInterruptModel, EvidenceSelectionInterruptModel, and ReviewInterruptModel define the exact payload the frontend receives when the graph pauses."],
                 ["RunSnapshotResponse", "schemas.py", "The main response shape returned by start, resume, and get snapshot endpoints."],
             ],
             styles,
@@ -362,7 +365,7 @@ def build_story(styles):
                 "guardrails controls whether the run may proceed and which tools are allowed.",
                 "past_topics holds loaded prior reports for history review.",
                 "history_review and history_decision control whether prior work is reused, used as context, or ignored.",
-                "retrieval_context stores selected history chunks; search_results stores normalized external evidence.",
+                "retrieval_context stores selected history chunks; search_results stores normalized external evidence; selected_evidence stores the items chosen by the user for synthesis.",
                 "research_plan guides tool queries; iteration and max_iterations control the search loop.",
                 "draft_report, review_decision, human_feedback, and final_report represent the report lifecycle.",
             ],
@@ -378,11 +381,11 @@ def build_story(styles):
                 ["api.py", "FastAPI app, CORS, HTTP endpoints, graph snapshot conversion, and translation endpoint."],
                 ["app.py", "Small adapter around LangGraph: create app, build config, build initial state, start/resume runs, inspect state and interrupts."],
                 ["graph.py", "Compiles the LangGraph StateGraph, creates LLM/embeddings/tools, wires every node and conditional route."],
-                ["nodes.py", "All workflow node implementations and helper logic for guardrails, history, evidence, reranking, reasoning, synthesis, review, publish, and persistence."],
+                ["nodes.py", "All workflow node implementations and helper logic for guardrails, history, evidence, reranking, evidence selection, reasoning, synthesis, review, publish, and persistence."],
                 ["state.py", "TypedDict definitions for internal graph state and nested report/evidence/history structures."],
                 ["schemas.py", "Pydantic validation for API requests/responses, LLM structured outputs, reports, interrupts, and snapshots."],
                 ["prompts.py", "Central prompt strings for planner, guardrails, history review, reasoner, synthesis, and publishing."],
-                ["tools.py", "Creates TavilySearch and WikipediaQueryRun tools consumed by graph.py's ToolNode."],
+                ["tools.py", "Creates TavilySearch, WikipediaQueryRun, weather, news, politics, and sports tools consumed by graph.py's ToolNode."],
                 ["history_store.py", "Loads, merges, sorts, and atomically saves JSON history in data/research_history.json."],
                 ["validate_scenarios.py", "HTTP-based validation runner that creates sessions, starts/resumes runs, and checks expected behavior."],
                 ["sample_queries.py", "Manual test query set for similar, related, and new history behavior."],
@@ -395,7 +398,56 @@ def build_story(styles):
     )
 
     flow.append(PageBreak())
-    flow.append(p("7. History and Fresh Search Behavior", styles["Section"]))
+    flow.append(p("7. Code-Level Interaction Map", styles["Section"]))
+    flow.append(
+        p(
+            "This section explains how the files cooperate at runtime. LangGraph nodes do not mutate shared objects directly; each node returns a partial state update, and LangGraph merges that update into the current ResearchState for the active thread_id. That is why state.py, schemas.py, graph.py, nodes.py, app.py, and api.py have to stay in sync.",
+            styles["Body"],
+        )
+    )
+    flow.append(
+        table(
+            [
+                ["File", "Reads", "Writes", "Why it matters"],
+                ["state.py", "All graph inputs and outputs as TypedDict fields.", "The state contract itself.", "Defines what every node may read and update, including search_results, selected_evidence, draft_report, and final_report."],
+                ["schemas.py", "Incoming HTTP payloads and structured model outputs.", "Validated request/response objects and interrupt payload models.", "Keeps the frontend, API, and LangGraph checkpoints compatible."],
+                ["graph.py", "Current state plus compiled tool list.", "Graph wiring, conditional edges, and node registration.", "Decides when to search, when to pause, and which node runs next."],
+                ["nodes.py", "State plus prompts, history, and tool outputs.", "Partial state updates for guardrails, history review, evidence selection, synthesis, review, publish, and persistence.", "Implements the actual business logic of the workflow."],
+                ["app.py", "Thread config and current graph instance.", "Command(resume=...) payloads or initial state payloads.", "Provides the start/resume boundary between API code and LangGraph."],
+                ["api.py", "HTTP requests and current graph state.", "RunSnapshotResponse objects and translation responses.", "Turns graph state into the REST responses the UI consumes."],
+            ],
+            styles,
+            [1.15 * inch, 1.6 * inch, 1.55 * inch, 3.0 * inch],
+        )
+    )
+    flow.append(p("Runtime behavior", styles["Subsection"]))
+    flow.append(
+        bullets(
+            [
+                "api.py receives a request and validates it with schemas.py before calling app.py.",
+                "app.py builds the thread config and calls the compiled LangGraph application created in graph.py.",
+                "graph.py sends the current state into the selected node and decides the next node from the returned state update.",
+                "nodes.py returns only the fields it changed. For example, capture_tool_results_node writes search_results and run_metrics, while review_gate_node writes review_decision and optional human_feedback.",
+                "schemas.py keeps the interrupt payloads and snapshots strict so the frontend can render them without guessing at shape.",
+            ],
+            styles,
+        )
+    )
+    flow.append(p("Evidence selection at code level", styles["Subsection"]))
+    flow.append(
+        bullets(
+            [
+                "reason_node decides whether the graph is DONE or needs another search loop.",
+                "When DONE and search_results exist, graph.py routes to evidence_selection_gate_node instead of synthesise_node.",
+                "evidence_selection_gate_node interrupts the run and sends the top evidence items plus selection instructions to the frontend.",
+                "The frontend sends selected_evidence_ids back through /api/runs/resume.",
+                "app.py wraps those ids inside Command(resume=...) and the graph continues with synthesise_node using selected_evidence instead of the full board.",
+            ],
+            styles,
+        )
+    )
+    flow.append(PageBreak())
+    flow.append(p("8. History and Fresh Search Behavior", styles["Section"]))
     flow.append(
         p(
             "Published reports are saved as records containing question, report, user_id, and created_at. The backend keeps a shared in-memory store and also persists records to data/research_history.json. When a run starts, load_history_node merges both sources and sorts records newest first.",
@@ -415,7 +467,7 @@ def build_story(styles):
         )
     )
 
-    flow.append(p("8. Backend Data Flow Example", styles["Section"]))
+    flow.append(p("9. Backend Data Flow Example", styles["Section"]))
     flow.append(
         table(
             [
@@ -425,17 +477,18 @@ def build_story(styles):
                 ["3. History", "question plus past_topics", "new/similar/related assessment and optional interrupt."],
                 ["4. Planning", "question, guardrails, relevant history", "2 to 3 search queries."],
                 ["5. Search loop", "plan, previous results, allowed tools", "Tool calls, normalized evidence, metrics, reasoner DONE/CONTINUE."],
-                ["6. Synthesis", "evidence and history context", "Structured draft report."],
-                ["7. Human review", "draft report", "approved, edited, or rejected decision."],
-                ["8. Publish", "approved draft", "FinalReportModel and polished published_report text."],
-                ["9. Save", "final report", "History record in memory and JSON for future comparisons."],
+                ["6. Evidence selection", "normalized evidence board", "User-chosen evidence ids stored in selected_evidence_ids and selected_evidence."],
+                ["7. Synthesis", "selected evidence and history context", "Structured draft report."],
+                ["8. Human review", "draft report", "approved, edited, or rejected decision."],
+                ["9. Publish", "approved draft", "FinalReportModel and polished published_report text."],
+                ["10. Save", "final report", "History record in memory and JSON for future comparisons."],
             ],
             styles,
             [0.95 * inch, 2.5 * inch, 3.35 * inch],
         )
     )
 
-    flow.append(p("9. Developer Notes", styles["Section"]))
+    flow.append(p("10. Developer Notes", styles["Section"]))
     flow.append(
         bullets(
             [
@@ -444,7 +497,7 @@ def build_story(styles):
                 "Frontend command from react-frontend/: npm run dev.",
                 "Validation command: python validate_scenarios.py --base-url http://localhost:8000/api.",
                 "When debugging stale history, inspect data/research_history.json and the history_review interrupt payload returned by /api/runs/{thread_id}.",
-                "When debugging search quality, inspect search_results, retrieval_context, run_metrics, and the allowed_tools selected by guardrails.",
+                "When debugging search quality, inspect search_results, selected_evidence, retrieval_context, run_metrics, and the allowed_tools selected by guardrails.",
             ],
             styles,
         )
