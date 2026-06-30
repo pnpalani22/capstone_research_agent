@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from uuid import uuid4
 
 from deep_translator import GoogleTranslator
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app import (
     build_run_config,
@@ -26,9 +30,22 @@ from schemas import (
     TranslateTextRequest,
     TranslateTextResponse,
 )
+from error_utils import friendly_api_error_message, friendly_token_exhaustion_message, is_token_exhaustion_error
 
 
 research_app = create_research_app()
+logger = logging.getLogger(__name__)
+error_log_path = Path(__file__).with_name("backend_errors.log")
+
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    file_handler = logging.FileHandler(error_log_path, encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    logger.addHandler(file_handler)
+    logger.propagate = True
 
 api = FastAPI(title="Deep Research Agent API", version="1.0.0")
 
@@ -46,6 +63,35 @@ api.add_middleware(
 
 def _config_for_thread(thread_id: str) -> dict[str, object]:
     return build_run_config(thread_id)
+
+
+def _raise_run_error(exc: Exception, context: str) -> None:
+    if is_token_exhaustion_error(exc):
+        logger.exception("%s stopped because the API quota or token limit was reached.", context, exc_info=exc)
+        raise HTTPException(status_code=503, detail=friendly_token_exhaustion_message(context)) from exc
+    logger.exception("%s failed unexpectedly.", context, exc_info=exc)
+    raise HTTPException(status_code=500, detail=friendly_api_error_message(exc, context)) from exc
+
+
+@api.exception_handler(Exception)
+def handle_unexpected_exception(_: Request, exc: Exception) -> JSONResponse:
+    """Return a friendly error payload for any unhandled backend failure."""
+
+    if isinstance(exc, HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    if is_token_exhaustion_error(exc):
+        logger.exception("Unhandled token exhaustion error in the research API.", exc_info=exc)
+        return JSONResponse(
+            status_code=503,
+            content={"detail": friendly_token_exhaustion_message("The research run")},
+        )
+
+    logger.exception("Unhandled exception in the research API.", exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": friendly_api_error_message(exc, "The research run")},
+    )
 
 
 def _snapshot_for_thread(thread_id: str) -> RunSnapshotResponse:
@@ -106,25 +152,31 @@ def get_run_snapshot(thread_id: str) -> RunSnapshotResponse:
 
 @api.post("/api/runs/start", response_model=RunSnapshotResponse)
 def start_run(request: StartResearchRequest) -> RunSnapshotResponse:
-    start_research_run(
-        research_app,
-        question=request.question,
-        user_id=request.user_id,
-        max_iterations=request.max_iterations,
-        config=_config_for_thread(request.thread_id),
-    )
+    try:
+        start_research_run(
+            research_app,
+            question=request.question,
+            user_id=request.user_id,
+            max_iterations=request.max_iterations,
+            config=_config_for_thread(request.thread_id),
+        )
+    except Exception as exc:
+        _raise_run_error(exc, "The research run")
     return _snapshot_for_thread(request.thread_id)
 
 
 @api.post("/api/runs/resume", response_model=RunSnapshotResponse)
 def resume_run(request: ResumeResearchRequest) -> RunSnapshotResponse:
-    resume_research_run(
-        research_app,
-        config=_config_for_thread(request.thread_id),
-        decision=request.decision,
-        human_feedback=request.human_feedback,
-        selected_evidence_ids=request.selected_evidence_ids,
-    )
+    try:
+        resume_research_run(
+            research_app,
+            config=_config_for_thread(request.thread_id),
+            decision=request.decision,
+            human_feedback=request.human_feedback,
+            selected_evidence_ids=request.selected_evidence_ids,
+        )
+    except Exception as exc:
+        _raise_run_error(exc, "The research run")
     return _snapshot_for_thread(request.thread_id)
 
 

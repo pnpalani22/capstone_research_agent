@@ -213,7 +213,7 @@ class RunSnapshotResponse(StrictBaseModel):
     review_decision: str = ""
     guardrails: GuardrailStateModel | None = None
     run_metrics: RunMetricsModel | None = None
-    interrupt: HistoryInterruptModel | ReviewInterruptModel | None = None
+    interrupt: HistoryInterruptModel | EvidenceSelectionInterruptModel | ReviewInterruptModel | None = None
     draft_report: DraftReportModel | None = None
     search_results: list[SearchResultModel] = Field(default_factory=list)
     selected_evidence_ids: list[str] = Field(default_factory=list)

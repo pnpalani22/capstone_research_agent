@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from langgraph.types import Command
 
+from error_utils import friendly_api_error_message, is_token_exhaustion_error
 from graph import build_app
 
 
@@ -86,25 +87,31 @@ def main():
     app = create_research_app()
     config = build_run_config("alice-research-1")
 
-    question = input("Research question: ").strip() or "What is the impact of transformer architecture on NLP?"
-    user_id = input("User id [alice]: ").strip() or "alice"
+    try:
+        question = input("Research question: ").strip() or "What is the impact of transformer architecture on NLP?"
+        user_id = input("User id [alice]: ").strip() or "alice"
 
-    result = start_research_run(
-        app,
-        question=question,
-        user_id=user_id,
-        max_iterations=2,
-        config=config,
-    )
+        result = start_research_run(
+            app,
+            question=question,
+            user_id=user_id,
+            max_iterations=2,
+            config=config,
+        )
 
-    interrupt_payload = get_pending_interrupt(app, config)
-    if interrupt_payload:
-        print("Run paused for review:")
-        print(interrupt_payload)
-        return
+        interrupt_payload = get_pending_interrupt(app, config)
+        if interrupt_payload:
+            print("Run paused for review:")
+            print(interrupt_payload)
+            return
 
-    print("Final report:")
-    print(get_final_report(result) or result)
+        print("Final report:")
+        print(get_final_report(result) or result)
+    except Exception as exc:
+        print(friendly_api_error_message(exc, "The CLI research run"), flush=True)
+        if is_token_exhaustion_error(exc):
+            raise SystemExit(1)
+        raise
 
 
 if __name__ == "__main__":

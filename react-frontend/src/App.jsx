@@ -419,6 +419,23 @@ const defaultSnapshot = {
   reused_topic: null,
 }
 
+const FATAL_API_ERROR_MESSAGE = 'The research service stopped because the API quota or token limit was reached. Please check your OpenAI usage or billing, then reload the app after it is restored.'
+
+function isFatalApiError(error) {
+  const status = Number(error?.status ?? 0)
+  const message = String(error?.message ?? '').toLowerCase()
+  return status === 503
+    || /insufficient_quota|quota|token limit|maximum context length|context length|rate limit/.test(message)
+}
+
+function formatApiError(error) {
+  if (isFatalApiError(error)) {
+    return FATAL_API_ERROR_MESSAGE
+  }
+
+  return String(error?.message ?? 'Request failed')
+}
+
 function App() {
   const [userId, setUserId] = useState('analyst-1')
   const [maxIterations, setMaxIterations] = useState(3)
@@ -427,6 +444,7 @@ function App() {
   const [snapshot, setSnapshot] = useState(defaultSnapshot)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [fatalError, setFatalError] = useState('')
   const [selectedLanguage, setSelectedLanguage] = useState(() => readStoredPreference(languagePreferenceKey, languageOptions, 'en'))
   const [translatedReport, setTranslatedReport] = useState('')
   const [translationLoading, setTranslationLoading] = useState(false)
@@ -659,7 +677,15 @@ function App() {
       })
       setTranslatedReport(response.translated_text)
     } catch (translationRequestError) {
-      setTranslationError(translationRequestError.message)
+      const message = formatApiError(translationRequestError)
+      if (isFatalApiError(translationRequestError)) {
+        setFatalError(message)
+        setError('')
+        setTranslationError('')
+        setTranslatedReport('')
+        return
+      }
+      setTranslationError(message)
       setTranslatedReport('')
     } finally {
       setTranslationLoading(false)
@@ -676,7 +702,13 @@ function App() {
       setQuestion('')
       setReviewerNote('')
     } catch (sessionError) {
-      setError(sessionError.message)
+      const message = formatApiError(sessionError)
+      if (isFatalApiError(sessionError)) {
+        setFatalError(message)
+        setError('')
+        return
+      }
+      setError(message)
     } finally {
       setLoading(false)
     }
@@ -703,7 +735,13 @@ function App() {
       })
       setSnapshot(nextSnapshot)
     } catch (submitError) {
-      setError(submitError.message)
+      const message = formatApiError(submitError)
+      if (isFatalApiError(submitError)) {
+        setFatalError(message)
+        setError('')
+        return
+      }
+      setError(message)
     } finally {
       setLoading(false)
     }
@@ -725,7 +763,13 @@ function App() {
         setReviewerNote('')
       }
     } catch (resumeError) {
-      setError(resumeError.message)
+      const message = formatApiError(resumeError)
+      if (isFatalApiError(resumeError)) {
+        setFatalError(message)
+        setError('')
+        return
+      }
+      setError(message)
     } finally {
       setLoading(false)
     }
@@ -811,6 +855,23 @@ function App() {
     downloadLink.click()
     downloadLink.remove()
     URL.revokeObjectURL(downloadUrl)
+  }
+
+  if (fatalError) {
+    return (
+      <div className="shell">
+        <main className="panel fatal-panel" style={{ maxWidth: '720px', margin: '6rem auto' }}>
+          <p className="eyebrow">Session ended</p>
+          <h1>Research workflow stopped</h1>
+          <p className="section-intro">{fatalError}</p>
+          <div className="button-row">
+            <button type="button" className="primary-button" onClick={() => window.location.reload()}>
+              Reload app
+            </button>
+          </div>
+        </main>
+      </div>
+    )
   }
 
   return (

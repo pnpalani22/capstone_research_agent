@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import streamlit as st
 
+from error_utils import friendly_api_error_message, friendly_token_exhaustion_message, is_token_exhaustion_error
 from app import (
     build_run_config,
     create_research_app,
@@ -177,6 +178,8 @@ def _ensure_session() -> None:
         st.session_state.last_result = None
     if "submitted_question" not in st.session_state:
         st.session_state.submitted_question = ""
+    if "fatal_error" not in st.session_state:
+        st.session_state.fatal_error = ""
 
 
 def _reset_session() -> None:
@@ -184,28 +187,46 @@ def _reset_session() -> None:
     st.session_state.config = build_run_config(st.session_state.thread_id)
     st.session_state.last_result = None
     st.session_state.submitted_question = ""
+    st.session_state.fatal_error = ""
+
+
+def _mark_fatal_error(exc: Exception, context: str) -> None:
+    if is_token_exhaustion_error(exc):
+        st.session_state.fatal_error = friendly_token_exhaustion_message(context)
+    else:
+        st.session_state.fatal_error = friendly_api_error_message(exc, context)
 
 
 def _start_run(question: str, user_id: str, max_iterations: int) -> None:
     st.session_state.submitted_question = question
-    start_research_run(
-        st.session_state.app,
-        question=question,
-        user_id=user_id,
-        max_iterations=max_iterations,
-        config=st.session_state.config,
-    )
-    st.session_state.last_result = get_run_state(st.session_state.app, st.session_state.config)
+    try:
+        start_research_run(
+            st.session_state.app,
+            question=question,
+            user_id=user_id,
+            max_iterations=max_iterations,
+            config=st.session_state.config,
+        )
+        st.session_state.last_result = get_run_state(st.session_state.app, st.session_state.config)
+    except Exception as exc:
+        _mark_fatal_error(exc, "The research session")
+        st.error(st.session_state.fatal_error)
+        st.stop()
 
 
 def _resume_run(decision: str, human_feedback: str = "") -> None:
-    resume_research_run(
-        st.session_state.app,
-        config=st.session_state.config,
-        decision=decision,
-        human_feedback=human_feedback,
-    )
-    st.session_state.last_result = get_run_state(st.session_state.app, st.session_state.config)
+    try:
+        resume_research_run(
+            st.session_state.app,
+            config=st.session_state.config,
+            decision=decision,
+            human_feedback=human_feedback,
+        )
+        st.session_state.last_result = get_run_state(st.session_state.app, st.session_state.config)
+    except Exception as exc:
+        _mark_fatal_error(exc, "The research session")
+        st.error(st.session_state.fatal_error)
+        st.stop()
 
 
 def _render_hero() -> None:
@@ -418,6 +439,10 @@ def _render_final_report(result: dict[str, object] | None) -> None:
 def main() -> None:
     _inject_styles()
     _ensure_session()
+
+    if st.session_state.fatal_error:
+        st.error(st.session_state.fatal_error)
+        st.stop()
 
     _render_hero()
     user_id, max_iterations = _render_sidebar()
