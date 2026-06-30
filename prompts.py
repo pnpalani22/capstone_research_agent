@@ -20,7 +20,7 @@ Rules:
 - Prefer both tools when the question needs current evidence plus background context.
 - Prefer wikipedia alone only for narrow factual background topics.
 - Prefer tavily alone only for broad live-web research.
-- Prefer weather for forecasts and conditions, news for recent headlines, sports for scores and schedules, and politics for elections, government, or political coverage.
+- Prefer weather for forecasts and conditions. Use Tavily and Wikipedia for all other research needs.
 
 Return structured output only.
 """.strip()

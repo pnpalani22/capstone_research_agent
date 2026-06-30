@@ -41,7 +41,7 @@ MAX_SEARCH_RESULTS_FOR_PROMPT = 4
 MAX_HISTORY_ITEMS_FOR_PROMPT = 3
 MIN_REASONER_EVIDENCE_ITEMS = 3
 MIN_REASONER_UNIQUE_SOURCES = 2
-DEFAULT_ALLOWED_TOOLS = ["tavily", "wikipedia", "weather", "news", "politics", "sports"]
+DEFAULT_ALLOWED_TOOLS = ["tavily", "wikipedia", "weather"]
 DOMAIN_TOOL_KEYWORDS = {
     "weather": {
         "weather",
@@ -54,48 +54,6 @@ DOMAIN_TOOL_KEYWORDS = {
         "climate",
         "snow",
         "storm",
-    },
-    "news": {
-        "news",
-        "headline",
-        "headlines",
-        "breaking",
-        "latest",
-        "update",
-        "updates",
-        "article",
-        "articles",
-        "report",
-        "reports",
-    },
-    "politics": {
-        "politics",
-        "political",
-        "election",
-        "elections",
-        "congress",
-        "senate",
-        "house",
-        "bill",
-        "policy",
-        "government",
-        "parliament",
-        "candidate",
-        "candidates",
-    },
-    "sports": {
-        "sports",
-        "score",
-        "scores",
-        "game",
-        "games",
-        "match",
-        "matches",
-        "standings",
-        "playoff",
-        "playoffs",
-        "league",
-        "team",
     },
 }
 HIGH_SEVERITY_RISK_FLAGS = {"prompt_injection", "secret_exfiltration", "policy_bypass"}
@@ -121,6 +79,17 @@ HISTORY_STOPWORDS = {
     "who",
     "why",
     "with",
+    "language",
+    "languages",
+    "model",
+    "models",
+    "understanding",
+    "context",
+    "task",
+    "tasks",
+    "text",
+    "heavy",
+    "long",
 }
 QUESTION_STOPWORDS = HISTORY_STOPWORDS | {
     "about",
@@ -141,6 +110,10 @@ QUESTION_RISK_PATTERNS = {
     "prompt_injection": re.compile(r"ignore\s+(all|any|previous)|system\s+prompt|developer\s+message", re.IGNORECASE),
     "secret_exfiltration": re.compile(r"api\s*key|token|password|secret", re.IGNORECASE),
     "policy_bypass": re.compile(r"bypass\s+(safety|policy|guardrails)|jailbreak|disable\s+(safety|guardrails)", re.IGNORECASE),
+    "non_research_request": re.compile(
+        r"\b(run|install|start|launch|restart|stop|deploy|build|execute|create|open|fix|debug)\b",
+        re.IGNORECASE,
+    ),
 }
 
 
@@ -223,14 +196,8 @@ def _build_local_research_plan(question: str, guardrails: dict[str, Any], releva
         if prior_topic:
             queries.append(f"{core} update since {prior_topic}")
 
-    if "news" in allowed_tools:
-        queries.append(f"{core} latest news")
-    elif "weather" in allowed_tools:
+    if "weather" in allowed_tools:
         queries.append(f"{core} current conditions")
-    elif "sports" in allowed_tools:
-        queries.append(f"{core} recent results")
-    elif "politics" in allowed_tools:
-        queries.append(f"{core} policy outlook")
     else:
         queries.append(f"{core} background context")
 
@@ -394,12 +361,31 @@ def _assess_question(question: str) -> dict[str, Any]:
         warnings.append("Question is overscoped; focus on one decision, market, or outcome for better research quality.")
 
     for flag, pattern in QUESTION_RISK_PATTERNS.items():
+        if flag == "non_research_request":
+            is_operational_request = (
+                pattern.search(sanitized_question)
+                and (
+                    re.search(r"\b(for me|please)\b", sanitized_question, re.IGNORECASE)
+                    or re.search(r"\b(npm|server|frontend|backend|docker|api|package|script|file|directory|port|command)\b", sanitized_question, re.IGNORECASE)
+                )
+            )
+            if is_operational_request:
+                risk_flags.append(flag)
+            continue
         if pattern.search(sanitized_question):
             risk_flags.append(flag)
 
-    status = "needs_clarification" if len(sanitized_question.split()) < 5 else "ready"
+    should_request_clarification = (
+        len(sanitized_question.split()) < 5
+        or len(sanitized_question) > 420
+        or len(sanitized_question.split()) > 90
+    )
+    status = "needs_clarification" if should_request_clarification else "ready"
     recommended_action = "revise" if status == "needs_clarification" or warnings else "proceed"
     if any(flag in HIGH_SEVERITY_RISK_FLAGS for flag in risk_flags):
+        status = "blocked"
+        recommended_action = "block"
+    elif "non_research_request" in risk_flags:
         status = "blocked"
         recommended_action = "block"
 
@@ -427,12 +413,16 @@ def _merge_guardrail_state(base: dict[str, Any], evaluation: dict[str, Any]) -> 
     status = evaluation.get("status", base.get("status", "ready"))
     if base.get("status") == "blocked" or any(flag in HIGH_SEVERITY_RISK_FLAGS for flag in evaluation.get("risk_flags", [])):
         status = "blocked"
-    elif base.get("status") == "needs_clarification" and status == "ready":
+    elif base.get("status") == "needs_clarification" or status == "needs_clarification":
         status = "needs_clarification"
+    else:
+        status = "ready"
 
     recommended_action = evaluation.get("recommended_action", base.get("recommended_action", "proceed"))
     if status == "blocked":
         recommended_action = "block"
+    elif status == "ready":
+        recommended_action = "proceed"
     elif status == "needs_clarification" and recommended_action == "proceed":
         recommended_action = "revise"
 
@@ -442,7 +432,7 @@ def _merge_guardrail_state(base: dict[str, Any], evaluation: dict[str, Any]) -> 
         "recommended_action": recommended_action,
         "warnings": _dedupe_text_list(list(base.get("warnings", [])) + list(evaluation.get("warnings", [])))[:6],
         "risk_flags": _dedupe_text_list(list(base.get("risk_flags", [])) + list(evaluation.get("risk_flags", [])))[:5],
-        "allowed_tools": list(dict.fromkeys(list(evaluation.get("allowed_tools", [])) or list(base.get("allowed_tools", DEFAULT_ALLOWED_TOOLS))))[:6],
+        "allowed_tools": list(dict.fromkeys(list(evaluation.get("allowed_tools", [])) or list(base.get("allowed_tools", DEFAULT_ALLOWED_TOOLS))))[:3],
         "explanation": _compact_whitespace(str(evaluation.get("explanation") or base.get("explanation") or "")),
         "clarifying_question": _compact_whitespace(str(evaluation.get("clarifying_question") or base.get("clarifying_question") or "")),
     }
@@ -682,11 +672,30 @@ def _title_overlap_score(question: str, title: str) -> float:
 
 
 def _history_terms(value: str) -> set[str]:
-    return {
+    tokens = [
         term
         for term in re.findall(r"[a-z0-9]+", value.lower())
         if len(term) > 1 and term not in HISTORY_STOPWORDS
-    }
+    ]
+
+    normalized_terms: list[str] = []
+    for term in tokens:
+        normalized = term
+        if normalized.endswith("ies") and len(normalized) > 4:
+            normalized = normalized[:-3] + "y"
+        elif normalized.endswith("sses") and len(normalized) > 5:
+            normalized = normalized[:-2]
+        elif normalized.endswith("s") and not normalized.endswith("ss") and len(normalized) > 3:
+            normalized = normalized[:-1]
+        if normalized and normalized not in HISTORY_STOPWORDS:
+            normalized_terms.append(normalized)
+
+    terms = set(normalized_terms)
+    for left, right in zip(normalized_terms, normalized_terms[1:]):
+        phrase = f"{left} {right}"
+        if len(phrase) > 3:
+            terms.add(phrase)
+    return terms
 
 
 def _history_question_key(value: str) -> str:
@@ -731,11 +740,31 @@ def _history_relevance_score(question: str, item: dict[str, Any]) -> float:
         return 1.0
 
     overlap = len(current_terms & item_terms)
+    if overlap == 0:
+        return 0.0
+
     precision = overlap / max(len(item_terms), 1)
     recall = overlap / max(len(current_terms), 1)
     if precision + recall == 0:
         return 0.0
-    return (2 * precision * recall) / (precision + recall)
+
+    score = (2 * precision * recall) / (precision + recall)
+    if overlap >= 5:
+        score = max(score, 0.82)
+    elif overlap >= 4:
+        score = max(score, 0.72)
+    elif overlap >= 3:
+        score = max(score, 0.58)
+    elif overlap >= 2:
+        score = max(score, 0.42)
+
+    strong_shared_terms = {
+        term for term in current_terms & item_terms if len(term) >= 5 and term not in {"process", "processing", "understanding", "context"}
+    }
+    if strong_shared_terms:
+        score = max(score, 0.6)
+
+    return min(1.0, score)
 
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:

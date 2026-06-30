@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 from urllib import error, request
 
+from history_store import load_persisted_history, save_persisted_history
+
 
 ROOT = Path(__file__).resolve().parent
 SCENARIO_FILE = ROOT / "validation_queries.json"
@@ -21,7 +23,10 @@ def _post_json(url: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             return response.status, json.loads(body)
     except error.HTTPError as exc:
         body = exc.read().decode("utf-8")
-        payload = json.loads(body) if body else {}
+        try:
+            payload = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            payload = {"detail": body or exc.reason}
         return exc.code, payload
 
 
@@ -44,13 +49,20 @@ def _start_run(base_url: str, thread_id: str, query: str, user_id: str, max_iter
     )
 
 
-def _resume_run(base_url: str, thread_id: str, decision: str, human_feedback: str = "") -> tuple[int, dict[str, Any]]:
+def _resume_run(
+    base_url: str,
+    thread_id: str,
+    decision: str,
+    human_feedback: str = "",
+    selected_evidence_ids: list[str] | None = None,
+) -> tuple[int, dict[str, Any]]:
     return _post_json(
         f"{base_url}/runs/resume",
         {
             "thread_id": thread_id,
             "decision": decision,
             "human_feedback": human_feedback,
+            "selected_evidence_ids": selected_evidence_ids or [],
         },
     )
 
@@ -77,6 +89,30 @@ def _assert(condition: bool, message: str, failures: list[str]) -> None:
         failures.append(message)
 
 
+def _reset_seed_history_for_user(scenarios: list[dict[str, Any]], user_id: str) -> None:
+    """Remove prior validation seed outputs so full validation runs stay repeatable."""
+
+    seed_questions = {
+        str(item.get("query", "")).strip()
+        for item in scenarios
+        if item.get("category") == "history_seed"
+    }
+    if not seed_questions:
+        return
+
+    history = load_persisted_history()
+    filtered = [
+        item
+        for item in history
+        if not (
+            str(item.get("user_id", "")).strip() == user_id
+            and str(item.get("question", "")).strip() in seed_questions
+        )
+    ]
+    if len(filtered) != len(history):
+        save_persisted_history(filtered)
+
+
 def _resolve_interrupts(base_url: str, thread_id: str, payload: dict[str, Any], expected: dict[str, Any]) -> tuple[int, dict[str, Any], list[str]]:
     """Resume known interrupt paths so validation can inspect later workflow stages."""
 
@@ -97,6 +133,23 @@ def _resolve_interrupts(base_url: str, thread_id: str, payload: dict[str, Any], 
             decision = "start_fresh_plan"
         elif action == "review_history_match" and next_step == "publish_then_store":
             decision = "proceed_with_context"
+        elif action == "select_evidence_for_report":
+            current_evidence = interrupt.get("current_evidence") or []
+            selected_ids = [
+                str(item.get("chunk_id", "")).strip()
+                for item in current_evidence[:1]
+                if str(item.get("chunk_id", "")).strip()
+            ]
+            status, payload = _resume_run(
+                base_url,
+                thread_id,
+                "selected_evidence",
+                selected_evidence_ids=selected_ids,
+            )
+            actions_taken.append("selected_evidence")
+            if status >= 400:
+                return status, payload, actions_taken
+            continue
         elif action == "review_before_publish" and next_step == "publish_then_store":
             decision = "approved"
 
@@ -206,6 +259,7 @@ def main() -> int:
     if args.category:
         wanted = set(args.category)
         scenarios = [item for item in scenarios if item.get("category") in wanted]
+    _reset_seed_history_for_user(scenarios, args.user_id)
 
     failures: list[str] = []
     passed = 0

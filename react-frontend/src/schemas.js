@@ -44,9 +44,9 @@ const guardrailStateSchema = {
     },
     allowed_tools: {
       type: 'array',
-      items: { enum: ['tavily', 'wikipedia', 'weather', 'news', 'politics', 'sports'] },
+      items: { enum: ['tavily', 'wikipedia'] },
       minItems: 1,
-      maxItems: 6,
+      maxItems: 2,
     },
     explanation: nonEmptyString,
     clarifying_question: { type: 'string' },

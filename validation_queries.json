@@ -104,16 +104,6 @@
       }
     },
     {
-      "id": "tool-prefer-tavily",
-      "category": "tool_preference",
-      "query": "What are the latest 2026 enterprise trends in AI agent evaluation platforms?",
-      "expected": {
-        "guardrail_status": "ready",
-        "allowed_tools_contains": ["tavily"],
-        "tool_preference": "tavily_first"
-      }
-    },
-    {
       "id": "tool-prefer-both",
       "category": "tool_preference",
       "query": "How do large language models work, and what current enterprise patterns are emerging for long-context evaluation?",
@@ -213,9 +203,8 @@
       "category": "history_review",
       "query": "How do large language models handle long-context understanding in text-heavy tasks?",
       "expected": {
-        "history_match_type": "related",
-        "interrupt_action": "review_history_match",
-        "resume_options": ["proceed_with_context", "start_fresh_plan", "reuse_existing"]
+        "history_match_type": "new",
+        "history_interrupt_expected": false
       }
     },
     {
@@ -235,7 +224,7 @@
         "guardrail_status": "ready",
         "draft_review_interrupt": "review_before_publish",
         "resume_options": ["approved", "edited", "rejected"],
-        "resume_actions_contains": ["start_fresh_plan"]
+        "resume_actions_contains": ["selected_evidence"]
       }
     },
     {

@@ -43,12 +43,6 @@ def _canonical_tool_name(tool_name: str) -> str:
         return "tavily"
     if "weather" in normalized:
         return "weather"
-    if "news" in normalized:
-        return "news"
-    if "politic" in normalized:
-        return "politics"
-    if "sport" in normalized:
-        return "sports"
     return normalized
 
 
@@ -57,7 +51,7 @@ def _allowed_tools_for_state(state: ResearchState, tools: list):
 
     allowed = {
         str(item).strip().lower()
-        for item in state.get("guardrails", {}).get("allowed_tools", ["tavily", "wikipedia", "weather", "news", "politics", "sports"])
+        for item in state.get("guardrails", {}).get("allowed_tools", ["tavily", "wikipedia", "weather"])
     }
     filtered = [tool for tool in tools if _canonical_tool_name(getattr(tool, "name", "")) in allowed]
     return filtered
@@ -98,7 +92,7 @@ def _build_search_messages(state: ResearchState):
         HumanMessage(
             content=(
                 f"Research question: {state['question']}\n\n"
-                f"Allowed tools: {state.get('guardrails', {}).get('allowed_tools', ['tavily', 'wikipedia', 'weather', 'news', 'politics', 'sports'])}\n\n"
+                f"Allowed tools: {state.get('guardrails', {}).get('allowed_tools', ['tavily', 'wikipedia', 'weather'])}\n\n"
                 f"Iteration: {state.get('iteration', 0)}\n\n"
                 f"Research plan: {research_plan[:3]}\n\n"
                 f"Retrieved history context: {retrieval_context}\n\n"

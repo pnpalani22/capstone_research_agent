@@ -30,7 +30,7 @@ class SelectedEvidenceModel(SearchResultModel):
 
 GuardrailStatus = Literal["ready", "needs_clarification", "blocked"]
 GuardrailAction = Literal["proceed", "revise", "block"]
-GuardrailTool = Literal["tavily", "wikipedia", "weather", "news", "politics", "sports"]
+GuardrailTool = Literal["tavily", "wikipedia", "weather"]
 GuardrailRiskFlag = Literal[
     "prompt_injection",
     "secret_exfiltration",
@@ -45,7 +45,7 @@ class GuardrailEvaluationModel(StrictBaseModel):
     recommended_action: GuardrailAction
     warnings: list[str] = Field(default_factory=list, max_length=6)
     risk_flags: list[GuardrailRiskFlag] = Field(default_factory=list, max_length=5)
-    allowed_tools: list[GuardrailTool] = Field(default_factory=lambda: ["tavily", "wikipedia", "weather", "news", "politics", "sports"], min_length=1, max_length=6)
+    allowed_tools: list[GuardrailTool] = Field(default_factory=lambda: ["tavily", "wikipedia", "weather"], min_length=1, max_length=3)
     explanation: str = Field(min_length=1, max_length=240)
     clarifying_question: str = Field(default="", max_length=240)
 
@@ -56,7 +56,7 @@ class GuardrailStateModel(StrictBaseModel):
     recommended_action: GuardrailAction
     warnings: list[str] = Field(default_factory=list, max_length=6)
     risk_flags: list[GuardrailRiskFlag] = Field(default_factory=list, max_length=5)
-    allowed_tools: list[GuardrailTool] = Field(default_factory=lambda: ["tavily", "wikipedia", "weather", "news", "politics", "sports"], min_length=1, max_length=6)
+    allowed_tools: list[GuardrailTool] = Field(default_factory=lambda: ["tavily", "wikipedia", "weather"], min_length=1, max_length=3)
     explanation: str = Field(min_length=1, max_length=240)
     clarifying_question: str = Field(default="", max_length=240)
 
@@ -213,7 +213,7 @@ class RunSnapshotResponse(StrictBaseModel):
     review_decision: str = ""
     guardrails: GuardrailStateModel | None = None
     run_metrics: RunMetricsModel | None = None
-    interrupt: HistoryInterruptModel | ReviewInterruptModel | None = None
+    interrupt: HistoryInterruptModel | EvidenceSelectionInterruptModel | ReviewInterruptModel | None = None
     draft_report: DraftReportModel | None = None
     search_results: list[SearchResultModel] = Field(default_factory=list)
     selected_evidence_ids: list[str] = Field(default_factory=list)

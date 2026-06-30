@@ -196,7 +196,7 @@ def build_story(styles):
                 ["LangGraph Orchestration", "graph.py compiles a StateGraph with guardrails, history review, planning, search, evidence selection, reasoning, synthesis, human review, publishing, and persistence nodes."],
                 ["Workflow Logic", "nodes.py contains the actual node implementations, helper scoring/reranking utilities, report normalization, interrupt handling, evidence selection, and history persistence actions."],
                 ["Contracts", "state.py defines graph state keys. schemas.py defines strict Pydantic request, response, interrupt, and LLM output models."],
-                ["External Tools", "tools.py creates Tavily, Wikipedia, weather, news, politics, and sports LangChain tools. graph.py allows only tools approved by guardrails."],
+                ["External Tools", "tools.py creates Tavily, Wikipedia, and weather LangChain tools. graph.py allows only tools approved by guardrails."],
             ],
             styles,
             [1.45 * inch, 5.35 * inch],
@@ -385,7 +385,7 @@ def build_story(styles):
                 ["state.py", "TypedDict definitions for internal graph state and nested report/evidence/history structures."],
                 ["schemas.py", "Pydantic validation for API requests/responses, LLM structured outputs, reports, interrupts, and snapshots."],
                 ["prompts.py", "Central prompt strings for planner, guardrails, history review, reasoner, synthesis, and publishing."],
-                ["tools.py", "Creates TavilySearch, WikipediaQueryRun, weather, news, politics, and sports tools consumed by graph.py's ToolNode."],
+                ["tools.py", "Creates TavilySearch, WikipediaQueryRun, and weather tools consumed by graph.py's ToolNode."],
                 ["history_store.py", "Loads, merges, sorts, and atomically saves JSON history in data/research_history.json."],
                 ["validate_scenarios.py", "HTTP-based validation runner that creates sessions, starts/resumes runs, and checks expected behavior."],
                 ["sample_queries.py", "Manual test query set for similar, related, and new history behavior."],
@@ -437,11 +437,11 @@ def build_story(styles):
     flow.append(
         bullets(
             [
-                "nodes.py first infers an allowed tool set from the sanitized question. Every run always allows tavily and wikipedia, then adds weather, news, politics, or sports when the question clearly matches those domains.",
+                "nodes.py first infers an allowed tool set from the sanitized question. Every run always allows tavily and wikipedia, then adds weather when the question clearly matches that domain.",
                 "graph.py filters the concrete LangChain tool objects down to that allowed set before the model can call anything.",
                 "The search node binds the LLM to only the allowed tools, so the model can only choose from the query-appropriate options.",
                 "If the model asks for a tool, ToolNode executes it; if not, the graph advances to reason_node and eventually to synthesis.",
-                "The prompts reinforce the preference: wikipedia for narrow background facts, tavily for broad live-web research, and weather/news/politics/sports for those specific query types.",
+                "The prompts reinforce the preference: wikipedia for narrow background facts, tavily for broad live-web research, and weather for forecasts and conditions.",
             ],
             styles,
         )
