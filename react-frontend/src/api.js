@@ -61,13 +61,21 @@ async function request(path, { method = 'GET', body, validateRequest, validateRe
     body: body ? JSON.stringify(body) : undefined,
   })
 
-  const data = await response.json()
+  let data = null
+  try {
+    data = await response.json()
+  } catch {
+    data = null
+  }
 
   if (!response.ok) {
     const detail = typeof data?.detail === 'string'
       ? data.detail
-      : readFriendlyQuestionError(data?.detail) ?? JSON.stringify(data)
-    throw new Error(detail || 'Request failed')
+      : readFriendlyQuestionError(data?.detail) ?? (data ? JSON.stringify(data) : '')
+    const error = new Error(detail || 'Request failed')
+    error.status = response.status
+    error.payload = data
+    throw error
   }
 
   if (validateResponse && !validateResponse(data)) {
