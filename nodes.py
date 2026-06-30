@@ -465,13 +465,10 @@ def _resolve_relevant_history(
         return []
 
     by_identity: dict[tuple[str, str], dict[str, Any]] = {}
-    by_question: dict[str, dict[str, Any]] = {}
     for item in sort_history_records(past_topics):
         question = str(item.get("question", "")).strip()
         created_at = str(item.get("created_at", "")).strip()
         by_identity[(question, created_at)] = item
-        if question and question not in by_question:
-            by_question[question] = item
 
     resolved: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -482,9 +479,8 @@ def _resolve_relevant_history(
         question = str(candidate.get("question", "")).strip()
         created_at = str(candidate.get("created_at", "")).strip()
         matched_item = by_identity.get((question, created_at))
-        newest_question_match = by_question.get(question) if question else None
-        if newest_question_match is not None:
-            matched_item = newest_question_match
+        if matched_item is None and question:
+            matched_item = _find_newest_exact_history_match(question, past_topics)
         if matched_item is None:
             continue
 
@@ -523,6 +519,25 @@ def _history_terms(value: str) -> set[str]:
         for term in re.findall(r"[a-z0-9]+", value.lower())
         if len(term) > 1 and term not in HISTORY_STOPWORDS
     }
+
+
+def _history_question_key(value: str) -> str:
+    """Normalize a question so exact reuse only matches the same wording."""
+
+    return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
+
+
+def _find_newest_exact_history_match(question: str, history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the newest stored record whose question matches exactly after normalization."""
+
+    question_key = _history_question_key(question)
+    if not question_key:
+        return None
+
+    for item in sort_history_records(history):
+        if _history_question_key(str(item.get("question", ""))) == question_key:
+            return item
+    return None
 
 
 def _history_relevance_score(question: str, item: dict[str, Any]) -> float:
@@ -1097,6 +1112,12 @@ def history_review_node(state: ResearchState, *, llm, embeddings=None) -> dict[s
         eligible_history,
         review.get("relevant_history", []),
     )
+    exact_reuse_candidate = _find_newest_exact_history_match(state["question"], past_topics)
+
+    if exact_reuse_candidate is not None and not relevant_history:
+        relevant_history = [exact_reuse_candidate]
+        if match_type == "new":
+            match_type = "similar"
 
     if match_type in {"similar", "related"} and not relevant_history:
         match_type = "new"
@@ -1123,6 +1144,7 @@ def history_review_gate_node(state: ResearchState) -> dict[str, Any]:
     history_review = state.get("history_review", {})
     match_type = history_review.get("match_type", "new")
     relevant_history = history_review.get("relevant_history", [])
+    reuse_candidate = _find_newest_exact_history_match(state["question"], state.get("past_topics", []))
 
     if match_type == "new" or not relevant_history:
         return {"history_decision": "proceed_with_context"}
@@ -1148,6 +1170,19 @@ def history_review_gate_node(state: ResearchState) -> dict[str, Any]:
             "match_type": match_type,
             "rationale": history_review.get("rationale", ""),
             "matches": matches,
+            "reuse_allowed": bool(reuse_candidate),
+            "reuse_candidate": (
+                {
+                    "question": reuse_candidate.get("question", ""),
+                    "published_report": reuse_candidate.get("report", {}).get("published_report", ""),
+                    "title": reuse_candidate.get("report", {}).get("title", ""),
+                    "summary": reuse_candidate.get("report", {}).get("summary", ""),
+                    "user_id": reuse_candidate.get("user_id", ""),
+                    "created_at": reuse_candidate.get("created_at", ""),
+                }
+                if reuse_candidate
+                else None
+            ),
         }
     )
 
@@ -1169,9 +1204,10 @@ def route_after_history_review_gate(state: ResearchState) -> str:
     """Route based on the user's decision after reviewing prior history."""
 
     decision = state.get("history_decision", "proceed_with_context")
+    reuse_candidate = _find_newest_exact_history_match(state["question"], state.get("past_topics", []))
     if decision == "start_fresh_plan":
         return "start_fresh_plan"
-    if decision == "reuse_existing":
+    if decision == "reuse_existing" and reuse_candidate is not None:
         return "reuse_existing"
     return "proceed_with_context"
 
@@ -1179,20 +1215,19 @@ def route_after_history_review_gate(state: ResearchState) -> str:
 def reuse_existing_report_node(state: ResearchState) -> dict[str, Any]:
     """Reuse the best matched prior published report without new research."""
 
-    relevant_history = state.get("history_review", {}).get("relevant_history", [])
-    if not relevant_history:
+    reuse_candidate = _find_newest_exact_history_match(state["question"], state.get("past_topics", []))
+    if reuse_candidate is None:
         return {"history_decision": "proceed_with_context"}
 
-    reused_record = relevant_history[0]
-    reused_report = reused_record.get("report", {})
+    reused_report = reuse_candidate.get("report", {})
 
     return {
-        "reused_topic": reused_record,
+        "reused_topic": reuse_candidate,
         "final_report": reused_report,
         "messages": [
             AIMessage(
                 content=(
-                    "Reused an existing published report from history for the current question."
+                    "Reused the newest exact-match published report from history for the current question."
                 )
             )
         ],

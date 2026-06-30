@@ -280,7 +280,7 @@ def build_story(styles):
             [
                 ["Decision point", "Possible routes"],
                 ["After guardrails", "continue -> load_history_node; blocked -> guardrail_block_node -> END."],
-                ["After history gate", "proceed_with_context -> planner_node; start_fresh_plan -> planner_node; reuse_existing -> reuse_existing_report_node -> save_history_node -> END."],
+                ["After history gate", "proceed_with_context -> planner_node; start_fresh_plan -> planner_node; reuse_existing -> reuse_existing_report_node -> save_history_node -> END, but only when the latest exact question match exists."],
                 ["After tool access gate", "continue -> search_node; blocked -> guardrail_block_node -> END."],
                 ["After search_node", "If the LLM requested tools, route to ToolNode; otherwise go directly to reason_node."],
                 ["After reason_node", "CONTINUE -> prepare_search_node for another loop; DONE -> evidence_selection_gate_node when evidence exists, otherwise synthesise_node."],
@@ -295,7 +295,7 @@ def build_story(styles):
     flow.append(
         bullets(
             [
-                "history_review_gate_node pauses when similar or related history exists and asks the user whether to reuse, proceed with context, or start fresh.",
+                "history_review_gate_node pauses when similar or related history exists and asks the user whether to proceed with context or start fresh; reuse_existing is offered only for the newest exact question match.",
                 "evidence_selection_gate_node pauses before synthesis and asks the user to choose which normalized evidence items should drive the report.",
                 "review_gate_node pauses before publishing and asks the user to approve, edit with feedback, or reject the draft.",
                 "MemorySaver stores checkpoints per thread_id, so a later resume request can continue from the paused point.",
@@ -322,7 +322,7 @@ def build_story(styles):
                 ["load_history_node", "Loads shared in-memory history and persisted JSON history, merges records, sorts newest first, and writes them into state."],
                 ["history_review_node", "Scores relevant prior records, asks the LLM whether the current question is similar, related, or new, and prepares history context."],
                 ["history_review_gate_node", "Raises a LangGraph interrupt when relevant history should be reviewed by the user."],
-                ["reuse_existing_report_node", "Uses the best matched prior report as final_report without doing new search."],
+                ["reuse_existing_report_node", "Uses the newest exact-match prior report as final_report without doing new search."],
                 ["planner_node", "Creates 2 to 3 targeted search directions, optionally using relevant history as context."],
                 ["prepare_search_node", "Increments the loop iteration counter before a search round."],
                 ["capture_tool_results_node", "Reads ToolMessage outputs, normalizes Tavily/Wikipedia results, deduplicates evidence, and updates metrics."],
@@ -433,6 +433,19 @@ def build_story(styles):
             styles,
         )
     )
+    flow.append(p("Tool selection flow", styles["Subsection"]))
+    flow.append(
+        bullets(
+            [
+                "nodes.py first infers an allowed tool set from the sanitized question. Every run always allows tavily and wikipedia, then adds weather, news, politics, or sports when the question clearly matches those domains.",
+                "graph.py filters the concrete LangChain tool objects down to that allowed set before the model can call anything.",
+                "The search node binds the LLM to only the allowed tools, so the model can only choose from the query-appropriate options.",
+                "If the model asks for a tool, ToolNode executes it; if not, the graph advances to reason_node and eventually to synthesis.",
+                "The prompts reinforce the preference: wikipedia for narrow background facts, tavily for broad live-web research, and weather/news/politics/sports for those specific query types.",
+            ],
+            styles,
+        )
+    )
     flow.append(p("Evidence selection at code level", styles["Subsection"]))
     flow.append(
         bullets(
@@ -461,7 +474,7 @@ def build_story(styles):
                 "sort_history_records makes the newest saved record win when the same question appears multiple times.",
                 "history_review_node filters history by deterministic relevance before the LLM sees prior records.",
                 "If no relevant record passes the threshold, the graph treats the question as new.",
-                "The user can choose reuse_existing, proceed_with_context, or start_fresh_plan when a relevant history interrupt appears.",
+                "The user can choose reuse_existing only when the newest exact question match exists; otherwise the interrupt allows proceed_with_context or start_fresh_plan.",
             ],
             styles,
         )
@@ -498,6 +511,148 @@ def build_story(styles):
                 "Validation command: python validate_scenarios.py --base-url http://localhost:8000/api.",
                 "When debugging stale history, inspect data/research_history.json and the history_review interrupt payload returned by /api/runs/{thread_id}.",
                 "When debugging search quality, inspect search_results, selected_evidence, retrieval_context, run_metrics, and the allowed_tools selected by guardrails.",
+            ],
+            styles,
+        )
+    )
+
+    flow.append(PageBreak())
+    flow.append(p("11. Worked End-to-End Examples", styles["Section"]))
+    flow.append(
+        p(
+            "These examples show how the backend behaves for common request types. They are intentionally written at the code-flow level so it is clear which file and node make each decision.",
+            styles["Body"],
+        )
+    )
+    flow.append(p("Example A - broad research query", styles["Subsection"]))
+    flow.append(
+        bullets(
+            [
+                "Question: \"How should a company evaluate open-source AI coding assistants for enterprise use?\"",
+                "nodes.py keeps tavily and wikipedia available because the request is broad and factual.",
+                "graph.py filters the tool list to the allowed set, and the search LLM may choose tavily first to gather live web evidence.",
+                "After enough evidence is collected, reason_node returns DONE, evidence_selection_gate_node pauses the run, and the user chooses the strongest sources before synthesis.",
+                "The final report is written by publish_node and saved by save_history_node for future reuse checks.",
+            ],
+            styles,
+        )
+    )
+    flow.append(p("Example B - weather query", styles["Subsection"]))
+    flow.append(
+        bullets(
+            [
+                "Question: \"What is the weather forecast for Chennai this week?\"",
+                "nodes.py recognizes the weather keyword and adds weather to the allowed tool set.",
+                "The search node can now call the weather tool directly through ToolNode instead of forcing a general web search.",
+                "The answer path is shorter because weather data usually satisfies the question without many retrieval loops.",
+                "The published report still follows the same review and save steps as any other run.",
+            ],
+            styles,
+        )
+    )
+    flow.append(p("Example C - exact history reuse", styles["Subsection"]))
+    flow.append(
+        bullets(
+            [
+                "Question: \"What is the weather forecast for Chennai this week?\" asked again after a report was already published.",
+                "history_review_node compares the current question against stored history and finds the newest exact match.",
+                "history_review_gate_node exposes reuse_allowed=true, so the frontend shows Reuse exact match in addition to Use as context and Start fresh.",
+                "If the user chooses reuse_existing, reuse_existing_report_node copies the newest matching final report into final_report without running another search loop.",
+                "This is the safe path for repeated questions because it reuses the last published answer instead of a loosely related older topic.",
+            ],
+            styles,
+        )
+    )
+    flow.append(p("Example D - replan after rejection", styles["Subsection"]))
+    flow.append(
+        bullets(
+            [
+                "The user reviews the draft, adds comments, and clicks Reject.",
+                "review_gate_node stores review_decision='rejected' and human_feedback in state.",
+                "planner_node sees the rejection, resets the plan, and ignores prior search results when building a fresh plan.",
+                "The workflow returns to the search loop with a new direction while keeping the same thread_id and run history.",
+                "This keeps the final report anchored to the latest reviewer guidance instead of the previous draft.",
+            ],
+            styles,
+        )
+    )
+
+    flow.append(p("12. API Payload Examples", styles["Section"]))
+    flow.append(
+        p(
+            "The examples below are simplified so the shape is easy to read. The actual requests and responses are validated by schemas.py and by the FastAPI endpoints in api.py.",
+            styles["Body"],
+        )
+    )
+    flow.append(p("Start request", styles["Subsection"]))
+    flow.append(
+        p(
+            "{\n"
+            '  "thread_id": "ui-1234",\n'
+            '  "question": "How should we evaluate open-source AI coding assistants for enterprise use?",\n'
+            '  "user_id": "analyst-1",\n'
+            '  "max_iterations": 3\n'
+            "}",
+            styles["CodeBlock"],
+        )
+    )
+    flow.append(p("History interrupt response", styles["Subsection"]))
+    flow.append(
+        p(
+            "{\n"
+            '  "action": "review_history_match",\n'
+            '  "current_question": "What is the weather forecast for Chennai this week?",\n'
+            '  "match_type": "similar",\n'
+            '  "rationale": "A previously published report asks the same weather question.",\n'
+            '  "reuse_allowed": true,\n'
+            '  "reuse_candidate": {\n'
+            '    "question": "What is the weather forecast for Chennai this week?",\n'
+            '    "title": "Chennai Weekly Weather Report",\n'
+            '    "summary": "Warm conditions with scattered rain late in the week.",\n'
+            '    "user_id": "analyst-1",\n'
+            '    "created_at": "2026-06-29T08:00:00Z"\n'
+            "  }\n"
+            "}",
+            styles["CodeBlock"],
+        )
+    )
+    flow.append(p("Evidence selection interrupt response", styles["Subsection"]))
+    flow.append(
+        p(
+            "{\n"
+            '  "action": "select_evidence_for_report",\n'
+            '  "question": "How should a company evaluate open-source AI coding assistants for enterprise use?",\n'
+            '  "research_plan": ["Compare licensing and data handling", "Review integration and security controls"],\n'
+            '  "current_evidence": [\n'
+            '    {"chunk_id": "tavily-1", "title": "Vendor comparison article", "score": 0.83},\n'
+            '    {"chunk_id": "wiki-1", "title": "Open-source software licensing", "score": 0.71}\n'
+            "  ],\n"
+            '  "instructions": "Select one or more evidence items to use for the report."\n'
+            "}",
+            styles["CodeBlock"],
+        )
+    )
+    flow.append(p("Resume request for evidence selection", styles["Subsection"]))
+    flow.append(
+        p(
+            "{\n"
+            '  "thread_id": "ui-1234",\n'
+            '  "decision": "selected_evidence",\n'
+            '  "selected_evidence_ids": ["tavily-1", "wiki-1"],\n'
+            '  "human_feedback": ""\n'
+            "}",
+            styles["CodeBlock"],
+        )
+    )
+    flow.append(p("13. What to Inspect When Debugging", styles["Section"]))
+    flow.append(
+        bullets(
+            [
+                "If the request is blocked too early, inspect evaluate_guardrails_node, the sanitized question, and the allowed_tools list in the guardrail state.",
+                "If the wrong tool is being used, inspect nodes.py _infer_allowed_tools, graph.py _allowed_tools_for_state, and the prompt guidance in prompts.py.",
+                "If old history is being reused incorrectly, inspect _find_newest_exact_history_match, history_review_node, and the interrupt payload returned by history_review_gate_node.",
+                "If the report ignores selected evidence, inspect selected_evidence_ids in the resume request and selected_evidence in the run snapshot.",
+                "If translation seems automatic, check api.py /api/translate and the frontend action that triggers it; it uses a translation package, not the report-generation LLM.",
             ],
             styles,
         )

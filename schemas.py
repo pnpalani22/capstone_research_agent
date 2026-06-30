@@ -137,6 +137,8 @@ class HistoryInterruptModel(StrictBaseModel):
     match_type: Literal["similar", "related", "new"]
     rationale: str = Field(min_length=1)
     matches: list[HistoryMatchModel] = Field(default_factory=list)
+    reuse_allowed: bool = False
+    reuse_candidate: HistoryMatchModel | None = None
 
 
 class EvidenceSelectionInterruptModel(StrictBaseModel):

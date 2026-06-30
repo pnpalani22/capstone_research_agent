@@ -127,13 +127,15 @@ const historyMatchSchema = {
 const historyInterruptSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['action', 'current_question', 'match_type', 'rationale', 'matches'],
+  required: ['action', 'current_question', 'match_type', 'rationale', 'matches', 'reuse_allowed', 'reuse_candidate'],
   properties: {
     action: { const: 'review_history_match' },
     current_question: nonEmptyString,
     match_type: { enum: ['similar', 'related', 'new'] },
     rationale: nonEmptyString,
     matches: { type: 'array', items: historyMatchSchema },
+    reuse_allowed: { type: 'boolean' },
+    reuse_candidate: { anyOf: [historyMatchSchema, { type: 'null' }] },
   },
 }
 

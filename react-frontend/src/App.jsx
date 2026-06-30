@@ -826,10 +826,17 @@ function App() {
                 <button type="button" className="secondary-button" onClick={() => void handleResume('start_fresh_plan')} disabled={loading}>
                   Start fresh
                 </button>
-                <button type="button" className="secondary-button" onClick={() => void handleResume('reuse_existing')} disabled={loading}>
-                  Reuse best match
-                </button>
+                {interrupt.reuse_allowed ? (
+                  <button type="button" className="secondary-button" onClick={() => void handleResume('reuse_existing')} disabled={loading}>
+                    Reuse exact match
+                  </button>
+                ) : null}
               </div>
+              {interrupt.reuse_allowed ? (
+                <p className="inline-note">Reuse is limited to the newest exact question match.</p>
+              ) : (
+                <p className="inline-note">There is no exact question match here, so reuse stays disabled.</p>
+              )}
             </section>
           ) : null}
 
