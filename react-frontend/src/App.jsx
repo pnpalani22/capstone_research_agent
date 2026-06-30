@@ -133,6 +133,149 @@ function selectMatchingVoice(voices, languageConfig) {
     ?? null
 }
 
+function escapePdfText(value) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7E\n\t]/g, '?')
+    .replace(/\\/g, '\\\\')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)')
+    .replace(/\r/g, '')
+}
+
+function sanitizeFileName(value) {
+  return String(value || 'research-report')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'research-report'
+}
+
+function wrapText(value, maxLength = 92) {
+  const paragraphs = String(value ?? '').split(/\n+/)
+  const wrappedLines = []
+
+  paragraphs.forEach((paragraph) => {
+    const words = paragraph.trim().split(/\s+/).filter(Boolean)
+    if (!words.length) {
+      wrappedLines.push('')
+      return
+    }
+
+    let line = ''
+    words.forEach((word) => {
+      const nextLine = line ? `${line} ${word}` : word
+      if (nextLine.length > maxLength && line) {
+        wrappedLines.push(line)
+        line = word
+      } else {
+        line = nextLine
+      }
+    })
+
+    if (line) {
+      wrappedLines.push(line)
+    }
+  })
+
+  return wrappedLines
+}
+
+function buildReportPdfLines(report, snapshot, publishMode) {
+  const sourceLines = report.sources?.length
+    ? report.sources.map((source, index) => `${index + 1}. ${source.title}${source.url ? ` - ${source.url}` : ''}`)
+    : ['No sources listed.']
+
+  const findingLines = report.key_findings?.length
+    ? report.key_findings.map((item, index) => `${index + 1}. ${item}`)
+    : ['No key findings listed.']
+
+  return [
+    { text: report.title || 'Research Report', size: 18, bold: true, gapAfter: 10, wrap: 62 },
+    { text: `Question: ${snapshot.question || 'Not available'}`, size: 10, gapAfter: 8, wrap: 88 },
+    { text: `Confidence: ${Math.round((report.confidence ?? 0) * 100)}%`, size: 10, gapAfter: 4, wrap: 88 },
+    { text: `Publish mode: ${publishMode}`, size: 10, gapAfter: 12, wrap: 88 },
+    { text: 'Executive Summary', size: 13, bold: true, gapAfter: 5, wrap: 82 },
+    { text: report.summary || 'No summary available.', size: 10, gapAfter: 12, wrap: 88 },
+    { text: 'Published Answer', size: 13, bold: true, gapAfter: 5, wrap: 82 },
+    { text: report.published_report || 'No published report available.', size: 10, gapAfter: 12, wrap: 88 },
+    { text: 'Key Findings', size: 13, bold: true, gapAfter: 5, wrap: 82 },
+    ...findingLines.map((text) => ({ text, size: 10, gapAfter: 4, wrap: 88 })),
+    { text: '', size: 10, gapAfter: 8, wrap: 88 },
+    { text: 'Sources', size: 13, bold: true, gapAfter: 5, wrap: 82 },
+    ...sourceLines.map((text) => ({ text, size: 9, gapAfter: 4, wrap: 96 })),
+  ]
+}
+
+function createReportPdfBlob(report, snapshot, publishMode) {
+  const pageWidth = 612
+  const pageHeight = 792
+  const marginX = 54
+  const marginTop = 58
+  const marginBottom = 54
+  const contentStartY = pageHeight - marginTop
+  const minY = marginBottom
+  const pages = [[]]
+  let y = contentStartY
+
+  const addLine = (text, size = 10, bold = false) => {
+    const lineHeight = Math.max(12, size + 4)
+    if (y - lineHeight < minY) {
+      pages.push([])
+      y = contentStartY
+    }
+
+    pages[pages.length - 1].push({ text, size, bold, x: marginX, y })
+    y -= lineHeight
+  }
+
+  buildReportPdfLines(report, snapshot, publishMode).forEach((block) => {
+    wrapText(block.text, block.wrap).forEach((line) => addLine(line, block.size, block.bold))
+    y -= block.gapAfter ?? 0
+  })
+
+  const objects = []
+  const addObject = (body) => {
+    objects.push(body)
+    return objects.length
+  }
+
+  const catalogId = addObject('<< /Type /Catalog /Pages 2 0 R >>')
+  const pagesId = addObject('')
+  const fontRegularId = addObject('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+  const fontBoldId = addObject('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>')
+  const pageIds = []
+
+  pages.forEach((pageLines) => {
+    const stream = pageLines.map((line) => (
+      `BT /${line.bold ? 'F2' : 'F1'} ${line.size} Tf ${line.x} ${line.y} Td (${escapePdfText(line.text)}) Tj ET`
+    )).join('\n')
+    const streamLength = new TextEncoder().encode(stream).length
+    const contentId = addObject(`<< /Length ${streamLength} >>\nstream\n${stream}\nendstream`)
+    const pageId = addObject(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontBoldId} 0 R >> >> /Contents ${contentId} 0 R >>`)
+    pageIds.push(pageId)
+  })
+
+  objects[pagesId - 1] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${pageIds.length} >>`
+
+  let pdf = '%PDF-1.4\n'
+  const offsets = [0]
+  objects.forEach((body, index) => {
+    offsets.push(pdf.length)
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`
+  })
+
+  const xrefOffset = pdf.length
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  offsets.slice(1).forEach((offset) => {
+    pdf += `${String(offset).padStart(10, '0')} 00000 n \n`
+  })
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`
+
+  return new Blob([new TextEncoder().encode(pdf)], { type: 'application/pdf' })
+}
+
 const defaultSnapshot = {
   thread_id: '',
   status: 'idle',
@@ -147,6 +290,8 @@ const defaultSnapshot = {
   interrupt: null,
   draft_report: null,
   search_results: [],
+  selected_evidence_ids: [],
+  selected_evidence: [],
   final_report: null,
   reused_topic: null,
 }
@@ -168,10 +313,15 @@ function App() {
   const [recentLanguages, setRecentLanguages] = useState(() => readStoredLanguageHistory())
   const [isProsodyCustomized, setIsProsodyCustomized] = useState(false)
   const [availableVoices, setAvailableVoices] = useState([])
+  const [reportPreviewOpen, setReportPreviewOpen] = useState(false)
+  const [selectedEvidenceId, setSelectedEvidenceId] = useState('')
   const interrupt = snapshot.interrupt
   const finalReport = snapshot.final_report
   const draftReport = interrupt?.action === 'review_before_publish' ? interrupt.draft : snapshot.draft_report
   const evidence = snapshot.search_results ?? []
+  const evidenceSelectionInterrupt = interrupt?.action === 'select_evidence_for_report' ? interrupt : null
+  const evidenceSelectionItems = evidenceSelectionInterrupt?.current_evidence?.length ? evidenceSelectionInterrupt.current_evidence : evidence.slice(0, 8)
+  const selectedEvidenceItem = evidenceSelectionItems.find((item) => item.chunk_id === selectedEvidenceId) ?? null
   const guardrails = snapshot.guardrails
   const metrics = snapshot.run_metrics
   const threadId = snapshot.thread_id
@@ -179,6 +329,8 @@ function App() {
   const statusLabel = interrupt ? 'Awaiting analyst input' : finalReport ? 'Published' : loading ? 'Researching' : 'Ready'
   const stageLabel = interrupt?.action === 'review_history_match'
     ? 'History review'
+    : interrupt?.action === 'select_evidence_for_report'
+      ? 'Evidence selection'
     : interrupt?.action === 'review_before_publish'
       ? 'Draft approval'
       : finalReport
@@ -197,6 +349,7 @@ function App() {
   const matchingVoice = selectMatchingVoice(availableVoices, selectedLanguageMeta)
   const hasMatchingVoice = Boolean(matchingVoice)
   const hasSpeechSynthesis = typeof window !== 'undefined' && 'speechSynthesis' in window
+  const finalReportPublishMode = isReusedResult ? 'Reused institutional memory' : 'Fresh synthesis run'
   const speechCapabilityByLanguage = languageOptions.reduce((capabilities, option) => {
     capabilities[option.code] = Boolean(selectMatchingVoice(availableVoices, option))
     return capabilities
@@ -211,6 +364,7 @@ function App() {
     setTranslationError('')
     window.speechSynthesis?.cancel()
     setSpeakingLanguage('')
+    setReportPreviewOpen(false)
   }, [snapshot.final_report?.published_report])
 
   useEffect(() => {
@@ -282,51 +436,40 @@ function App() {
   }, [snapshot.final_report?.published_report])
 
   useEffect(() => {
+    if (evidenceSelectionInterrupt) {
+      setSelectedEvidenceId('')
+      return
+    }
+
+    setSelectedEvidenceId('')
+  }, [evidenceSelectionInterrupt?.action, interrupt?.action])
+
+  async function handleTranslate() {
     if (!finalReport?.published_report) {
       return
     }
 
-    if (selectedLanguage === 'en') {
-      setTranslatedReport(finalReport.published_report)
-      setTranslationError('')
-      setTranslationLoading(false)
-      return
-    }
+    setTranslationLoading(true)
+    setTranslationError('')
 
-    let isActive = true
-
-    async function syncTranslatedReport() {
-      setTranslationLoading(true)
-      setTranslationError('')
-
-      try {
-        const response = await translateText({
-          text: finalReport.published_report,
-          target_language: selectedLanguage,
-        })
-        if (!isActive) {
-          return
-        }
-        setTranslatedReport(response.translated_text)
-      } catch (translationRequestError) {
-        if (!isActive) {
-          return
-        }
-        setTranslationError(translationRequestError.message)
-        setTranslatedReport('')
-      } finally {
-        if (isActive) {
-          setTranslationLoading(false)
-        }
+    try {
+      if (selectedLanguage === 'en') {
+        setTranslatedReport(finalReport.published_report)
+        return
       }
-    }
 
-    void syncTranslatedReport()
-
-    return () => {
-      isActive = false
+      const response = await translateText({
+        text: finalReport.published_report,
+        target_language: selectedLanguage,
+      })
+      setTranslatedReport(response.translated_text)
+    } catch (translationRequestError) {
+      setTranslationError(translationRequestError.message)
+      setTranslatedReport('')
+    } finally {
+      setTranslationLoading(false)
     }
-  }, [finalReport?.published_report, selectedLanguage])
+  }
 
   async function initializeSession() {
     setLoading(true)
@@ -371,7 +514,7 @@ function App() {
     }
   }
 
-  async function handleResume(decision) {
+  async function handleResume(decision, options = {}) {
     setLoading(true)
     setError('')
 
@@ -380,6 +523,7 @@ function App() {
         thread_id: threadId,
         decision,
         human_feedback: reviewerNote,
+        selected_evidence_ids: options.selectedEvidenceIds ?? [],
       })
       setSnapshot(nextSnapshot)
       if (decision === 'approved' || decision === 'edited' || decision === 'rejected') {
@@ -420,6 +564,10 @@ function App() {
     window.speechSynthesis.speak(utterance)
   }
 
+  function handleSelectEvidence(item) {
+    setSelectedEvidenceId(item?.chunk_id ?? '')
+  }
+
   function handleStopSpeech() {
     if (!window.speechSynthesis) {
       return
@@ -427,6 +575,22 @@ function App() {
 
     window.speechSynthesis.cancel()
     setSpeakingLanguage('')
+  }
+
+  function handleDownloadReportPdf() {
+    if (!finalReport) {
+      return
+    }
+
+    const pdfBlob = createReportPdfBlob(finalReport, snapshot, finalReportPublishMode)
+    const downloadUrl = URL.createObjectURL(pdfBlob)
+    const downloadLink = document.createElement('a')
+    downloadLink.href = downloadUrl
+    downloadLink.download = `${sanitizeFileName(finalReport.title)}.pdf`
+    document.body.appendChild(downloadLink)
+    downloadLink.click()
+    downloadLink.remove()
+    URL.revokeObjectURL(downloadUrl)
   }
 
   return (
@@ -733,20 +897,81 @@ function App() {
               <p className="eyebrow">Evidence</p>
               <h3>Normalized retrieval board</h3>
             </div>
-            <p className="section-intro">Use this board to validate which tool produced the evidence, how it ranked, and whether the reranker kept diverse sources.</p>
+            <p className="section-intro">
+              {evidenceSelectionInterrupt
+                ? 'Choose the evidence items that should drive the report, then continue with the selected set.'
+                : 'Use this board to validate which tool produced the evidence, how it ranked, and whether the reranker kept diverse sources.'}
+            </p>
             {evidence.length ? (
-              <div className="evidence-grid">
-                {evidence.slice(0, 8).map((item) => (
-                  <article className="evidence-card" key={item.chunk_id}>
-                    <div className="card-topline">
-                      <span className="badge neutral">{item.source_type}</span>
-                      <span className="score-pill">{Math.round(item.score * 100)}%</span>
+              <div className="evidence-workspace">
+                <div className="evidence-grid">
+                  {evidenceSelectionItems.map((item) => {
+                    const isSelected = selectedEvidenceId === item.chunk_id
+                    return (
+                      <article
+                        className={`evidence-card ${isSelected ? 'selected' : ''}`}
+                        key={item.chunk_id}
+                        onClick={() => handleSelectEvidence(item)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            handleSelectEvidence(item)
+                          }
+                        }}
+                        aria-pressed={isSelected}
+                      >
+                        <div className="card-topline">
+                          <span className="badge neutral">{item.source_type}</span>
+                          <span className="score-pill">{Math.round(item.score * 100)}%</span>
+                        </div>
+                        <h4>{item.url ? <a href={item.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>{item.title}</a> : item.title}</h4>
+                        <p>{item.snippet}</p>
+                        <div className="micro-label">{item.tool_name}</div>
+                      </article>
+                    )
+                  })}
+                </div>
+                {evidenceSelectionInterrupt ? (
+                  <aside className="evidence-drawer">
+                    <div className="section-heading compact">
+                      <p className="eyebrow">Details</p>
+                      <h4>{selectedEvidenceItem?.title || 'Select evidence'}</h4>
                     </div>
-                    <h4>{item.url ? <a href={item.url} target="_blank" rel="noreferrer">{item.title}</a> : item.title}</h4>
-                    <p>{item.snippet}</p>
-                    <div className="micro-label">{item.tool_name}</div>
-                  </article>
-                ))}
+                    {selectedEvidenceItem ? (
+                      <>
+                        <p className="muted-copy">{selectedEvidenceItem.snippet}</p>
+                        <div className="selection-summary-row">
+                          <span className="selection-pill">{selectedEvidenceItem.tool_name}</span>
+                          <span className="selection-pill">{selectedEvidenceItem.source_type}</span>
+                          <span className="selection-pill">{Math.round(selectedEvidenceItem.score * 100)}%</span>
+                        </div>
+                        <p className="detail-meta"><strong>Chunk:</strong> {selectedEvidenceItem.chunk_id}</p>
+                        {selectedEvidenceItem.url ? (
+                          <p className="detail-meta">
+                            <strong>Source:</strong>{' '}
+                            <a href={selectedEvidenceItem.url} target="_blank" rel="noreferrer">
+                              Open source
+                            </a>
+                          </p>
+                        ) : null}
+                        <div className="button-row compact-row">
+                          <button
+                            type="button"
+                            className="primary-button"
+                            onClick={() => void handleResume('selected_evidence', { selectedEvidenceIds: [selectedEvidenceItem.chunk_id] })}
+                            disabled={loading}
+                          >
+                            Use selected evidence and continue
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="muted-copy">{evidenceSelectionInterrupt.instructions}</p>
+                    )}
+                  </aside>
+                ) : null}
               </div>
             ) : (
               <p className="muted-copy">Evidence chunks from search tools and prior research memory will appear here.</p>
@@ -760,6 +985,14 @@ function App() {
                 <h2>{finalReport.title}</h2>
               </div>
               <p className="section-intro">This final section shows the published answer that should be checked against your validation expectation.</p>
+              <div className="report-action-row" aria-label="Final report PDF actions">
+                <button type="button" className="secondary-button compact-action-button" onClick={() => setReportPreviewOpen(true)}>
+                  Preview PDF
+                </button>
+                <button type="button" className="primary-button compact-action-button" onClick={handleDownloadReportPdf}>
+                  Download PDF
+                </button>
+              </div>
               <div className="report-header-grid">
                 <article className="report-status-card highlight">
                   <span>Executive summary</span>
@@ -771,7 +1004,7 @@ function App() {
                 </article>
                 <article className="report-status-card">
                   <span>Publish mode</span>
-                  <strong>{isReusedResult ? 'Reused institutional memory' : 'Fresh synthesis run'}</strong>
+                  <strong>{finalReportPublishMode}</strong>
                 </article>
               </div>
               {isReusedResult ? (
@@ -809,7 +1042,7 @@ function App() {
                 <div className="card-header-row">
                   <div>
                     <h4>Translation stage</h4>
-                    <p className="muted-copy">Language selection updates the conversion body automatically, and the speech icons read exactly that visible converted content with the chosen tone.</p>
+                    <p className="muted-copy">Choose a target language, then click Translate to generate the converted answer and speech-ready text with the selected tone.</p>
                   </div>
                   <div className="speech-action-row">
                     {reportSpeechText ? (
@@ -862,6 +1095,14 @@ function App() {
                         </optgroup>
                       ))}
                     </select>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => void handleTranslate()}
+                      disabled={!finalReport?.published_report || translationLoading}
+                    >
+                      {translationLoading ? 'Translating...' : 'Translate'}
+                    </button>
                     <p className="control-helper">{selectedLanguageMeta.helper}</p>
                     {!hasMatchingVoice ? (
                       <p className="control-helper warning-helper">
@@ -899,8 +1140,8 @@ function App() {
                   <span className="micro-label">{selectedLanguageMeta.label} output | {selectedProsodyMeta.label} tone</span>
                   <p className="published-copy">
                     {translationLoading
-                      ? `Updating the answer in ${selectedLanguageMeta.label}...`
-                      : reportSpeechText || 'Select a language to update the answer preview and speech output.'}
+                      ? `Translating the answer into ${selectedLanguageMeta.label}...`
+                      : reportSpeechText || 'Choose a language and click Translate to generate the preview and speech output.'}
                   </p>
                   <div className="selection-summary-row">
                     <span className="selection-pill">Language: {selectedLanguageMeta.label}</span>
@@ -944,9 +1185,70 @@ function App() {
             </section>
           )}
 
-          {error ? <section className="panel error-panel">{error}</section> : null}
+          {error ? (
+            <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Error">
+              <section className="error-modal">
+                <p className="error-modal-message">{error}</p>
+                <button type="button" className="btn-primary" onClick={() => setError('')}>Dismiss</button>
+              </section>
+            </div>
+          ) : null}
         </main>
       </div>
+
+      {reportPreviewOpen && finalReport ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="report-preview-title">
+          <section className="report-preview-modal">
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">PDF preview</p>
+                <h2 id="report-preview-title">{finalReport.title}</h2>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setReportPreviewOpen(false)}
+                aria-label="Close PDF preview"
+                title="Close PDF preview"
+              >
+                X
+              </button>
+            </div>
+            <div className="pdf-preview-sheet">
+              <h3>{finalReport.title}</h3>
+              <p className="pdf-preview-meta"><strong>Question:</strong> {snapshot.question || 'Not available'}</p>
+              <p className="pdf-preview-meta"><strong>Confidence:</strong> {Math.round(finalReport.confidence * 100)}%</p>
+              <p className="pdf-preview-meta"><strong>Publish mode:</strong> {finalReportPublishMode}</p>
+              <h4>Executive Summary</h4>
+              <p>{finalReport.summary}</p>
+              <h4>Published Answer</h4>
+              <p className="published-copy">{finalReport.published_report}</p>
+              <h4>Key Findings</h4>
+              <ul>
+                {finalReport.key_findings.map((item) => (
+                  <li key={`preview-${item}`}>{item}</li>
+                ))}
+              </ul>
+              <h4>Sources</h4>
+              <ul>
+                {finalReport.sources.length ? finalReport.sources.map((source) => (
+                  <li key={`preview-${source.title}-${source.url}`}>
+                    {source.title}{source.url ? ` - ${source.url}` : ''}
+                  </li>
+                )) : <li>No sources listed.</li>}
+              </ul>
+            </div>
+            <div className="modal-action-row">
+              <button type="button" className="secondary-button compact-action-button" onClick={() => setReportPreviewOpen(false)}>
+                Close
+              </button>
+              <button type="button" className="primary-button compact-action-button" onClick={handleDownloadReportPdf}>
+                Download PDF
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   )
 }

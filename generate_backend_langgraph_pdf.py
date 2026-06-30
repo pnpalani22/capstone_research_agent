@@ -1,0 +1,473 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import (
+    Flowable,
+    ListFlowable,
+    ListItem,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
+
+
+ROOT = Path(__file__).resolve().parent
+OUTPUT = ROOT / "output" / "pdf" / "Deep_Research_Agent_Backend_LangGraph_Documentation.pdf"
+
+
+class Rule(Flowable):
+    def __init__(self, width: float = 6.9 * inch, color=colors.HexColor("#1f6f78")):
+        super().__init__()
+        self.width = width
+        self.height = 0.08 * inch
+        self.color = color
+
+    def draw(self) -> None:
+        self.canv.setStrokeColor(self.color)
+        self.canv.setLineWidth(1.2)
+        self.canv.line(0, self.height / 2, self.width, self.height / 2)
+
+
+def stylesheet():
+    base = getSampleStyleSheet()
+    base.add(
+        ParagraphStyle(
+            name="TitleMain",
+            parent=base["Title"],
+            fontName="Helvetica-Bold",
+            fontSize=26,
+            leading=31,
+            textColor=colors.HexColor("#12343b"),
+            alignment=TA_CENTER,
+            spaceAfter=16,
+        )
+    )
+    base.add(
+        ParagraphStyle(
+            name="Subtitle",
+            parent=base["Normal"],
+            fontName="Helvetica",
+            fontSize=11,
+            leading=16,
+            textColor=colors.HexColor("#34535a"),
+            alignment=TA_CENTER,
+            spaceAfter=18,
+        )
+    )
+    base.add(
+        ParagraphStyle(
+            name="Section",
+            parent=base["Heading1"],
+            fontName="Helvetica-Bold",
+            fontSize=17,
+            leading=22,
+            textColor=colors.HexColor("#12343b"),
+            spaceBefore=12,
+            spaceAfter=8,
+        )
+    )
+    base.add(
+        ParagraphStyle(
+            name="Subsection",
+            parent=base["Heading2"],
+            fontName="Helvetica-Bold",
+            fontSize=12.5,
+            leading=16,
+            textColor=colors.HexColor("#1f6f78"),
+            spaceBefore=8,
+            spaceAfter=5,
+        )
+    )
+    base.add(
+        ParagraphStyle(
+            name="Body",
+            parent=base["BodyText"],
+            fontName="Helvetica",
+            fontSize=9.4,
+            leading=13.2,
+            textColor=colors.HexColor("#1f2933"),
+            spaceAfter=6,
+        )
+    )
+    base.add(
+        ParagraphStyle(
+            name="Small",
+            parent=base["BodyText"],
+            fontName="Helvetica",
+            fontSize=8.2,
+            leading=11,
+            textColor=colors.HexColor("#334e68"),
+        )
+    )
+    base.add(
+        ParagraphStyle(
+            name="CodeBlock",
+            parent=base["BodyText"],
+            fontName="Courier",
+            fontSize=8,
+            leading=10.5,
+            textColor=colors.HexColor("#102a43"),
+            backColor=colors.HexColor("#eef5f6"),
+            borderPadding=5,
+            spaceAfter=8,
+        )
+    )
+    return base
+
+
+def p(text: str, style: ParagraphStyle) -> Paragraph:
+    return Paragraph(text.replace("&", "&amp;"), style)
+
+
+def bullets(items: list[str], styles) -> ListFlowable:
+    return ListFlowable(
+        [ListItem(p(item, styles["Body"]), leftIndent=8) for item in items],
+        bulletType="bullet",
+        start="circle",
+        leftIndent=14,
+        bulletFontSize=6,
+        spaceAfter=6,
+    )
+
+
+def table(data: list[list[str]], styles, widths: list[float] | None = None) -> Table:
+    rows = [[p(cell, styles["Small"]) for cell in row] for row in data]
+    tbl = Table(rows, colWidths=widths, repeatRows=1)
+    tbl.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#12343b")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#b8c7cc")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#fbfdfe")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f3f8f9")]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    return tbl
+
+
+def header_footer(canvas, doc) -> None:
+    canvas.saveState()
+    canvas.setFillColor(colors.HexColor("#12343b"))
+    canvas.setFont("Helvetica-Bold", 8.5)
+    canvas.drawString(doc.leftMargin, A4[1] - 0.38 * inch, "Deep Research Agent - Backend and LangGraph Flow")
+    canvas.setStrokeColor(colors.HexColor("#d8e4e8"))
+    canvas.line(doc.leftMargin, A4[1] - 0.45 * inch, A4[0] - doc.rightMargin, A4[1] - 0.45 * inch)
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColor(colors.HexColor("#526d77"))
+    canvas.drawRightString(A4[0] - doc.rightMargin, 0.38 * inch, f"Page {doc.page}")
+    canvas.restoreState()
+
+
+def build_story(styles):
+    flow = []
+    flow.append(Spacer(1, 0.35 * inch))
+    flow.append(p("Deep Research Agent", styles["TitleMain"]))
+    flow.append(p("Backend API and LangGraph Flow Documentation", styles["Subtitle"]))
+    flow.append(Rule())
+    flow.append(Spacer(1, 0.2 * inch))
+    flow.append(
+        p(
+            "This document explains how the Python backend works, how the LangGraph workflow moves from a user question to a final published report, and how each Python file participates in the system.",
+            styles["Body"],
+        )
+    )
+    flow.append(
+        table(
+            [
+                ["Area", "Summary"],
+                ["Backend API", "FastAPI service in api.py exposes session, run start/resume, run snapshot, health, and translation endpoints."],
+                ["LangGraph Orchestration", "graph.py compiles a StateGraph with guardrails, history review, planning, search, reasoning, synthesis, human review, publishing, and persistence nodes."],
+                ["Workflow Logic", "nodes.py contains the actual node implementations, helper scoring/reranking utilities, report normalization, interrupt handling, and history persistence actions."],
+                ["Contracts", "state.py defines graph state keys. schemas.py defines strict Pydantic request, response, interrupt, and LLM output models."],
+                ["External Tools", "tools.py creates Tavily and Wikipedia LangChain tools. graph.py allows only tools approved by guardrails."],
+            ],
+            styles,
+            [1.45 * inch, 5.35 * inch],
+        )
+    )
+
+    flow.append(PageBreak())
+    flow.append(p("1. High-Level Architecture", styles["Section"]))
+    flow.append(
+        p(
+            "The app has three major layers. The frontend calls FastAPI. FastAPI delegates execution to helper functions in app.py. Those helpers invoke a compiled LangGraph application from graph.py. The graph stores run state by thread_id and pauses at human review checkpoints by using LangGraph interrupts.",
+            styles["Body"],
+        )
+    )
+    flow.append(
+        table(
+            [
+                ["Layer", "Main files", "Responsibility"],
+                ["Presentation", "react-frontend/, frontend.py", "React is the main UI. frontend.py is an optional Streamlit UI for local exploration."],
+                ["API boundary", "api.py, schemas.py", "Receives HTTP requests, validates payloads, converts graph state to frontend-friendly snapshots, and handles translation."],
+                ["Run helpers", "app.py", "Creates graph instances, builds thread config, starts/resumes runs, and reads pending interrupts or current state."],
+                ["Graph orchestration", "graph.py, state.py", "Defines LangGraph nodes, edges, routing decisions, checkpointer, shared store, and state shape."],
+                ["Business logic", "nodes.py, prompts.py, tools.py, history_store.py", "Implements guardrails, history review, search, reasoning, synthesis, review, publishing, persistence, prompts, tools, and JSON history storage."],
+            ],
+            styles,
+            [1.35 * inch, 1.6 * inch, 3.85 * inch],
+        )
+    )
+    flow.append(p("Typical request path", styles["Subsection"]))
+    flow.append(
+        bullets(
+            [
+                "The frontend requests POST /api/sessions to create a thread_id.",
+                "The frontend posts a question to POST /api/runs/start.",
+                "api.py calls start_research_run from app.py, passing a LangGraph config containing the thread_id.",
+                "The graph executes until it completes or reaches an interrupt such as history review or draft approval.",
+                "api.py returns a RunSnapshotResponse containing status, guardrails, metrics, interrupt payload, draft, search results, or final report.",
+                "When the user chooses a decision, the frontend calls POST /api/runs/resume. app.py resumes the graph with Command(resume=...).",
+            ],
+            styles,
+        )
+    )
+
+    flow.append(p("2. FastAPI Backend", styles["Section"]))
+    flow.append(p("api.py owns the HTTP API used by the React frontend. It creates one compiled research_app at module load time and reuses it across requests.", styles["Body"]))
+    flow.append(
+        table(
+            [
+                ["Endpoint", "Purpose", "Important behavior"],
+                ["GET /api/health", "Health check.", "Returns {status: ok}."],
+                ["POST /api/sessions", "Create a UI session.", "Returns a unique thread_id such as ui-<uuid>. This thread_id maps frontend interactions to one LangGraph run."],
+                ["GET /api/runs/{thread_id}", "Read current run snapshot.", "Uses app.get_state and pending interrupts to classify status as idle, waiting_input, or completed."],
+                ["POST /api/runs/start", "Start a research run.", "Validates StartResearchRequest, invokes the graph with question, user_id, max_iterations, and empty messages."],
+                ["POST /api/runs/resume", "Resume a paused run.", "Sends the user decision and optional human feedback into LangGraph using Command(resume=...)."],
+                ["POST /api/translate", "Translate final report text.", "Uses deep_translator.GoogleTranslator and returns translated_text plus target_language."],
+            ],
+            styles,
+            [1.55 * inch, 1.65 * inch, 3.6 * inch],
+        )
+    )
+    flow.append(
+        p(
+            "The private helper _snapshot_for_thread is important because it adapts raw graph state into RunSnapshotResponse. It detects pending interrupts by reading task.interrupts, validates them as HistoryInterruptModel or ReviewInterruptModel, and includes current run artifacts for the UI.",
+            styles["Body"],
+        )
+    )
+
+    flow.append(PageBreak())
+    flow.append(p("3. LangGraph Flow", styles["Section"]))
+    flow.append(p("graph.py builds and compiles the StateGraph. The graph uses ChatOpenAI(model='gpt-4o-mini'), OpenAIEmbeddings(model='text-embedding-3-small'), Tavily, Wikipedia, MemorySaver, and InMemoryStore.", styles["Body"]))
+    flow.append(p("Main path", styles["Subsection"]))
+    flow.append(
+        p(
+            "START -> initialize_run_node -> evaluate_guardrails_node -> load_history_node -> history_review_node -> history_review_gate_node -> planner_node -> prepare_search_node -> tool_access_gate_node -> search_node -> tools -> capture_tool_results_node -> reason_node -> synthesise_node -> review_gate_node -> publish_node -> save_history_node -> END",
+            styles["CodeBlock"],
+        )
+    )
+    flow.append(p("Conditional branches", styles["Subsection"]))
+    flow.append(
+        table(
+            [
+                ["Decision point", "Possible routes"],
+                ["After guardrails", "continue -> load_history_node; blocked -> guardrail_block_node -> END."],
+                ["After history gate", "proceed_with_context -> planner_node; start_fresh_plan -> planner_node; reuse_existing -> reuse_existing_report_node -> save_history_node -> END."],
+                ["After tool access gate", "continue -> search_node; blocked -> guardrail_block_node -> END."],
+                ["After search_node", "If the LLM requested tools, route to ToolNode; otherwise go directly to reason_node."],
+                ["After reason_node", "CONTINUE -> prepare_search_node for another loop; DONE -> synthesise_node."],
+                ["After review_gate_node", "approved -> publish_node; edited -> apply_edit_node -> publish_node; rejected -> planner_node."],
+            ],
+            styles,
+            [2.0 * inch, 4.8 * inch],
+        )
+    )
+    flow.append(p("Interrupts and resumability", styles["Subsection"]))
+    flow.append(
+        bullets(
+            [
+                "history_review_gate_node pauses when similar or related history exists and asks the user whether to reuse, proceed with context, or start fresh.",
+                "review_gate_node pauses before publishing and asks the user to approve, edit with feedback, or reject the draft.",
+                "MemorySaver stores checkpoints per thread_id, so a later resume request can continue from the paused point.",
+                "InMemoryStore stores shared research history while the backend process is alive; history_store.py also persists it to data/research_history.json.",
+            ],
+            styles,
+        )
+    )
+
+    flow.append(p("4. What nodes.py Does", styles["Section"]))
+    flow.append(
+        p(
+            "nodes.py is the workflow engine. It contains small graph nodes plus helper functions for cleaning inputs, scoring history, normalizing tool output, deduplicating/reranking evidence, computing metrics, validating drafts, and saving history.",
+            styles["Body"],
+        )
+    )
+    flow.append(
+        table(
+            [
+                ["Node", "Role"],
+                ["initialize_run_node", "Initializes default state keys such as iteration, decisions, reports, feedback, and metrics."],
+                ["evaluate_guardrails_node", "Sanitizes and assesses the question. Combines deterministic checks with structured LLM guardrail output."],
+                ["guardrail_block_node", "Creates a final blocked report when a request violates guardrail policy or no allowed tools are available."],
+                ["load_history_node", "Loads shared in-memory history and persisted JSON history, merges records, sorts newest first, and writes them into state."],
+                ["history_review_node", "Scores relevant prior records, asks the LLM whether the current question is similar, related, or new, and prepares history context."],
+                ["history_review_gate_node", "Raises a LangGraph interrupt when relevant history should be reviewed by the user."],
+                ["reuse_existing_report_node", "Uses the best matched prior report as final_report without doing new search."],
+                ["planner_node", "Creates 2 to 3 targeted search directions, optionally using relevant history as context."],
+                ["prepare_search_node", "Increments the loop iteration counter before a search round."],
+                ["capture_tool_results_node", "Reads ToolMessage outputs, normalizes Tavily/Wikipedia results, deduplicates evidence, and updates metrics."],
+                ["reason_node", "Decides whether the graph has enough evidence or should continue another search loop."],
+                ["synthesise_node", "Builds a structured DraftReportModel from accumulated evidence and history context."],
+                ["review_gate_node", "Raises the draft-review interrupt before publish."],
+                ["apply_edit_node", "Applies reviewer feedback to the draft summary before publishing."],
+                ["publish_node", "Turns the draft into a polished FinalReportModel with published_report text."],
+                ["save_history_node", "Persists completed final reports into shared store and data/research_history.json unless the run reused history."],
+            ],
+            styles,
+            [2.1 * inch, 4.7 * inch],
+        )
+    )
+
+    flow.append(PageBreak())
+    flow.append(p("5. State and Schemas", styles["Section"]))
+    flow.append(p("state.py defines the internal LangGraph state. schemas.py defines strict Pydantic models for HTTP payloads, graph snapshots, interrupts, and structured LLM outputs.", styles["Body"]))
+    flow.append(
+        table(
+            [
+                ["Concept", "Defined in", "How it is used"],
+                ["ResearchState", "state.py", "Shared dictionary carried through every LangGraph node. It includes question, user_id, messages, iteration counters, history, evidence, draft_report, final_report, and metrics."],
+                ["messages", "state.py", "Annotated with add_messages so LangGraph appends messages across node updates."],
+                ["Guardrail models", "schemas.py", "Constrain guardrail status, action, risk flags, allowed tools, explanation, and clarification prompt."],
+                ["DraftReportModel and FinalReportModel", "schemas.py", "Validate generated draft/final reports and prevent malformed report structures from reaching the UI."],
+                ["HistoryReviewModel", "schemas.py", "Constrains the LLM's memory comparison output to match_type, rationale, and relevant history references."],
+                ["Interrupt models", "schemas.py", "HistoryInterruptModel and ReviewInterruptModel define the exact payload the frontend receives when the graph pauses."],
+                ["RunSnapshotResponse", "schemas.py", "The main response shape returned by start, resume, and get snapshot endpoints."],
+            ],
+            styles,
+            [1.55 * inch, 1.25 * inch, 4.0 * inch],
+        )
+    )
+    flow.append(p("Important state fields", styles["Subsection"]))
+    flow.append(
+        bullets(
+            [
+                "guardrails controls whether the run may proceed and which tools are allowed.",
+                "past_topics holds loaded prior reports for history review.",
+                "history_review and history_decision control whether prior work is reused, used as context, or ignored.",
+                "retrieval_context stores selected history chunks; search_results stores normalized external evidence.",
+                "research_plan guides tool queries; iteration and max_iterations control the search loop.",
+                "draft_report, review_decision, human_feedback, and final_report represent the report lifecycle.",
+            ],
+            styles,
+        )
+    )
+
+    flow.append(p("6. File-by-File Guide", styles["Section"]))
+    flow.append(
+        table(
+            [
+                ["File", "Purpose"],
+                ["api.py", "FastAPI app, CORS, HTTP endpoints, graph snapshot conversion, and translation endpoint."],
+                ["app.py", "Small adapter around LangGraph: create app, build config, build initial state, start/resume runs, inspect state and interrupts."],
+                ["graph.py", "Compiles the LangGraph StateGraph, creates LLM/embeddings/tools, wires every node and conditional route."],
+                ["nodes.py", "All workflow node implementations and helper logic for guardrails, history, evidence, reranking, reasoning, synthesis, review, publish, and persistence."],
+                ["state.py", "TypedDict definitions for internal graph state and nested report/evidence/history structures."],
+                ["schemas.py", "Pydantic validation for API requests/responses, LLM structured outputs, reports, interrupts, and snapshots."],
+                ["prompts.py", "Central prompt strings for planner, guardrails, history review, reasoner, synthesis, and publishing."],
+                ["tools.py", "Creates TavilySearch and WikipediaQueryRun tools consumed by graph.py's ToolNode."],
+                ["history_store.py", "Loads, merges, sorts, and atomically saves JSON history in data/research_history.json."],
+                ["validate_scenarios.py", "HTTP-based validation runner that creates sessions, starts/resumes runs, and checks expected behavior."],
+                ["sample_queries.py", "Manual test query set for similar, related, and new history behavior."],
+                ["demo.py", "Minimal command-line graph demo with one canned research run and interrupt handling."],
+                ["frontend.py", "Optional Streamlit UI. The main frontend is react-frontend/."],
+            ],
+            styles,
+            [1.5 * inch, 5.3 * inch],
+        )
+    )
+
+    flow.append(PageBreak())
+    flow.append(p("7. History and Fresh Search Behavior", styles["Section"]))
+    flow.append(
+        p(
+            "Published reports are saved as records containing question, report, user_id, and created_at. The backend keeps a shared in-memory store and also persists records to data/research_history.json. When a run starts, load_history_node merges both sources and sorts records newest first.",
+            styles["Body"],
+        )
+    )
+    flow.append(
+        bullets(
+            [
+                "merge_history_records deduplicates by question plus created_at.",
+                "sort_history_records makes the newest saved record win when the same question appears multiple times.",
+                "history_review_node filters history by deterministic relevance before the LLM sees prior records.",
+                "If no relevant record passes the threshold, the graph treats the question as new.",
+                "The user can choose reuse_existing, proceed_with_context, or start_fresh_plan when a relevant history interrupt appears.",
+            ],
+            styles,
+        )
+    )
+
+    flow.append(p("8. Backend Data Flow Example", styles["Section"]))
+    flow.append(
+        table(
+            [
+                ["Step", "Input", "Output"],
+                ["1. Start", "thread_id, question, user_id, max_iterations", "Initial ResearchState in LangGraph."],
+                ["2. Guardrails", "question", "Sanitized question, risk flags, allowed tools, proceed/revise/block decision."],
+                ["3. History", "question plus past_topics", "new/similar/related assessment and optional interrupt."],
+                ["4. Planning", "question, guardrails, relevant history", "2 to 3 search queries."],
+                ["5. Search loop", "plan, previous results, allowed tools", "Tool calls, normalized evidence, metrics, reasoner DONE/CONTINUE."],
+                ["6. Synthesis", "evidence and history context", "Structured draft report."],
+                ["7. Human review", "draft report", "approved, edited, or rejected decision."],
+                ["8. Publish", "approved draft", "FinalReportModel and polished published_report text."],
+                ["9. Save", "final report", "History record in memory and JSON for future comparisons."],
+            ],
+            styles,
+            [0.95 * inch, 2.5 * inch, 3.35 * inch],
+        )
+    )
+
+    flow.append(p("9. Developer Notes", styles["Section"]))
+    flow.append(
+        bullets(
+            [
+                "Environment variables: OPENAI_API_KEY is required for ChatOpenAI and embeddings. TAVILY_API_KEY is required for Tavily search.",
+                "Backend command: uvicorn api:app --reload.",
+                "Frontend command from react-frontend/: npm run dev.",
+                "Validation command: python validate_scenarios.py --base-url http://localhost:8000/api.",
+                "When debugging stale history, inspect data/research_history.json and the history_review interrupt payload returned by /api/runs/{thread_id}.",
+                "When debugging search quality, inspect search_results, retrieval_context, run_metrics, and the allowed_tools selected by guardrails.",
+            ],
+            styles,
+        )
+    )
+    return flow
+
+
+def main() -> None:
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    styles = stylesheet()
+    doc = SimpleDocTemplate(
+        str(OUTPUT),
+        pagesize=A4,
+        rightMargin=0.55 * inch,
+        leftMargin=0.55 * inch,
+        topMargin=0.65 * inch,
+        bottomMargin=0.55 * inch,
+        title="Deep Research Agent Backend and LangGraph Documentation",
+        author="Codex",
+    )
+    doc.build(build_story(styles), onFirstPage=header_footer, onLaterPages=header_footer)
+    print(OUTPUT)
+
+
+if __name__ == "__main__":
+    main()

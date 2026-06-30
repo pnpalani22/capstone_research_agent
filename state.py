@@ -30,6 +30,18 @@ class SearchResult(TypedDict):
     chunk_id: str
 
 
+class SelectedEvidence(TypedDict):
+    """Evidence explicitly chosen by the user for report generation."""
+
+    tool_name: str
+    title: str
+    url: str
+    snippet: str
+    score: float
+    source_type: str
+    chunk_id: str
+
+
 class GuardrailState(TypedDict):
     """Question-level validation and risk assessment for the current run."""
 
@@ -110,6 +122,8 @@ class ResearchState(TypedDict, total=False):
     reused_topic: PastTopicRecord
     retrieval_context: list[SearchResult]
     search_results: list[SearchResult]
+    selected_evidence_ids: list[str]
+    selected_evidence: list[SelectedEvidence]
     research_plan: list[str]
     guardrails: GuardrailState
     run_metrics: RunMetrics

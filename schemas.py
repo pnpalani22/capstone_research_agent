@@ -24,9 +24,13 @@ class SearchResultModel(StrictBaseModel):
     chunk_id: str = Field(min_length=1)
 
 
+class SelectedEvidenceModel(SearchResultModel):
+    pass
+
+
 GuardrailStatus = Literal["ready", "needs_clarification", "blocked"]
 GuardrailAction = Literal["proceed", "revise", "block"]
-GuardrailTool = Literal["tavily", "wikipedia"]
+GuardrailTool = Literal["tavily", "wikipedia", "weather", "news", "politics", "sports"]
 GuardrailRiskFlag = Literal[
     "prompt_injection",
     "secret_exfiltration",
@@ -41,7 +45,7 @@ class GuardrailEvaluationModel(StrictBaseModel):
     recommended_action: GuardrailAction
     warnings: list[str] = Field(default_factory=list, max_length=6)
     risk_flags: list[GuardrailRiskFlag] = Field(default_factory=list, max_length=5)
-    allowed_tools: list[GuardrailTool] = Field(default_factory=lambda: ["tavily", "wikipedia"], min_length=1, max_length=2)
+    allowed_tools: list[GuardrailTool] = Field(default_factory=lambda: ["tavily", "wikipedia", "weather", "news", "politics", "sports"], min_length=1, max_length=6)
     explanation: str = Field(min_length=1, max_length=240)
     clarifying_question: str = Field(default="", max_length=240)
 
@@ -52,7 +56,7 @@ class GuardrailStateModel(StrictBaseModel):
     recommended_action: GuardrailAction
     warnings: list[str] = Field(default_factory=list, max_length=6)
     risk_flags: list[GuardrailRiskFlag] = Field(default_factory=list, max_length=5)
-    allowed_tools: list[GuardrailTool] = Field(default_factory=lambda: ["tavily", "wikipedia"], min_length=1, max_length=2)
+    allowed_tools: list[GuardrailTool] = Field(default_factory=lambda: ["tavily", "wikipedia", "weather", "news", "politics", "sports"], min_length=1, max_length=6)
     explanation: str = Field(min_length=1, max_length=240)
     clarifying_question: str = Field(default="", max_length=240)
 
@@ -135,6 +139,14 @@ class HistoryInterruptModel(StrictBaseModel):
     matches: list[HistoryMatchModel] = Field(default_factory=list)
 
 
+class EvidenceSelectionInterruptModel(StrictBaseModel):
+    action: Literal["select_evidence_for_report"]
+    question: str = Field(min_length=1)
+    research_plan: list[str] = Field(default_factory=list)
+    current_evidence: list[SearchResultModel] = Field(default_factory=list)
+    instructions: str = Field(min_length=1)
+
+
 class ReviewInterruptModel(StrictBaseModel):
     action: Literal["review_before_publish"]
     question: str = Field(min_length=1)
@@ -179,10 +191,12 @@ class ResumeResearchRequest(StrictBaseModel):
         "proceed_with_context",
         "start_fresh_plan",
         "reuse_existing",
+        "selected_evidence",
         "approved",
         "edited",
         "rejected",
     ]
+    selected_evidence_ids: list[str] = Field(default_factory=list, max_length=12)
     human_feedback: str = Field(default="", max_length=800)
 
 
@@ -200,5 +214,7 @@ class RunSnapshotResponse(StrictBaseModel):
     interrupt: HistoryInterruptModel | ReviewInterruptModel | None = None
     draft_report: DraftReportModel | None = None
     search_results: list[SearchResultModel] = Field(default_factory=list)
+    selected_evidence_ids: list[str] = Field(default_factory=list)
+    selected_evidence: list[SelectedEvidenceModel] = Field(default_factory=list)
     final_report: FinalReportModel | None = None
     reused_topic: PastTopicRecordModel | None = None

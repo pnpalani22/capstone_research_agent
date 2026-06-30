@@ -16,6 +16,19 @@ def _record_identity(item: dict[str, Any]) -> tuple[str, str]:
     )
 
 
+def _record_sort_key(item: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(item.get("created_at", "")).strip(),
+        str(item.get("question", "")).strip().lower(),
+    )
+
+
+def sort_history_records(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return history with the newest published records first."""
+
+    return sorted(history, key=_record_sort_key, reverse=True)
+
+
 def load_persisted_history() -> list[dict[str, Any]]:
     """Load previously published history records from disk."""
 
@@ -30,7 +43,7 @@ def load_persisted_history() -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         return []
 
-    return [item for item in payload if isinstance(item, dict)]
+    return sort_history_records([item for item in payload if isinstance(item, dict)])
 
 
 def save_persisted_history(history: list[dict[str, Any]]) -> None:
@@ -38,7 +51,7 @@ def save_persisted_history(history: list[dict[str, Any]]) -> None:
 
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
     temp_file = _HISTORY_FILE.with_suffix(".tmp")
-    temp_file.write_text(json.dumps(history, indent=2), encoding="utf-8")
+    temp_file.write_text(json.dumps(sort_history_records(history), indent=2), encoding="utf-8")
     temp_file.replace(_HISTORY_FILE)
 
 
@@ -56,4 +69,4 @@ def merge_history_records(*history_sets: list[dict[str, Any]]) -> list[dict[str,
                 continue
             seen.add(identity)
             merged.append(item)
-    return merged
+    return sort_history_records(merged)

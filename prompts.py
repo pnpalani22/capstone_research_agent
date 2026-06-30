@@ -19,7 +19,8 @@ Rules:
 - Mark non_research_request when the user is asking the system to execute operational work instead of researching a topic.
 - Prefer both tools when the question needs current evidence plus background context.
 - Prefer wikipedia alone only for narrow factual background topics.
-- Prefer tavily alone only for current events, market claims, or fast-changing information.
+- Prefer tavily alone only for broad live-web research.
+- Prefer weather for forecasts and conditions, news for recent headlines, sports for scores and schedules, and politics for elections, government, or political coverage.
 
 Return structured output only.
 """.strip()

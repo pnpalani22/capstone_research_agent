@@ -25,6 +25,8 @@ const searchResultSchema = {
   },
 }
 
+const selectedEvidenceSchema = searchResultSchema
+
 const guardrailStateSchema = {
   type: 'object',
   additionalProperties: false,
@@ -42,9 +44,9 @@ const guardrailStateSchema = {
     },
     allowed_tools: {
       type: 'array',
-      items: { enum: ['tavily', 'wikipedia'] },
+      items: { enum: ['tavily', 'wikipedia', 'weather', 'news', 'politics', 'sports'] },
       minItems: 1,
-      maxItems: 2,
+      maxItems: 6,
     },
     explanation: nonEmptyString,
     clarifying_question: { type: 'string' },
@@ -135,6 +137,19 @@ const historyInterruptSchema = {
   },
 }
 
+const evidenceSelectionInterruptSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['action', 'question', 'research_plan', 'current_evidence', 'instructions'],
+  properties: {
+    action: { const: 'select_evidence_for_report' },
+    question: nonEmptyString,
+    research_plan: { type: 'array', items: { type: 'string' } },
+    current_evidence: { type: 'array', items: searchResultSchema },
+    instructions: nonEmptyString,
+  },
+}
+
 const reviewInterruptSchema = {
   type: 'object',
   additionalProperties: false,
@@ -179,11 +194,13 @@ export const resumeResearchRequestSchema = {
         'proceed_with_context',
         'start_fresh_plan',
         'reuse_existing',
+        'selected_evidence',
         'approved',
         'edited',
         'rejected',
       ],
     },
+    selected_evidence_ids: { type: 'array', items: { type: 'string' } },
     human_feedback: { type: 'string', maxLength: 800 },
   },
 }
@@ -205,6 +222,8 @@ export const runSnapshotResponseSchema = {
     'interrupt',
     'draft_report',
     'search_results',
+    'selected_evidence_ids',
+    'selected_evidence',
     'final_report',
     'reused_topic',
   ],
@@ -233,6 +252,7 @@ export const runSnapshotResponseSchema = {
       anyOf: [
         { type: 'null' },
         historyInterruptSchema,
+        evidenceSelectionInterruptSchema,
         reviewInterruptSchema,
       ],
     },
@@ -243,6 +263,8 @@ export const runSnapshotResponseSchema = {
       ],
     },
     search_results: { type: 'array', items: searchResultSchema },
+    selected_evidence_ids: { type: 'array', items: { type: 'string' } },
+    selected_evidence: { type: 'array', items: selectedEvidenceSchema },
     final_report: {
       anyOf: [
         { type: 'null' },

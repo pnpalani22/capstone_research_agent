@@ -26,6 +26,7 @@ from nodes import (
     route_after_reason,
     save_history_node,
     synthesise_node,
+    evidence_selection_gate_node,
 )
 
 from state import ResearchState
@@ -40,6 +41,14 @@ def _canonical_tool_name(tool_name: str) -> str:
         return "wikipedia"
     if "tavily" in normalized:
         return "tavily"
+    if "weather" in normalized:
+        return "weather"
+    if "news" in normalized:
+        return "news"
+    if "politic" in normalized:
+        return "politics"
+    if "sport" in normalized:
+        return "sports"
     return normalized
 
 
@@ -48,7 +57,7 @@ def _allowed_tools_for_state(state: ResearchState, tools: list):
 
     allowed = {
         str(item).strip().lower()
-        for item in state.get("guardrails", {}).get("allowed_tools", ["tavily", "wikipedia"])
+        for item in state.get("guardrails", {}).get("allowed_tools", ["tavily", "wikipedia", "weather", "news", "politics", "sports"])
     }
     filtered = [tool for tool in tools if _canonical_tool_name(getattr(tool, "name", "")) in allowed]
     return filtered
@@ -90,7 +99,7 @@ def _build_search_messages(state: ResearchState):
             content=(
                 f"Research question: {state['question']}\n\n"
                 f"Question guardrails: {state.get('guardrails', {})}\n\n"
-                f"Allowed tools: {state.get('guardrails', {}).get('allowed_tools', ['tavily', 'wikipedia'])}\n\n"
+                f"Allowed tools: {state.get('guardrails', {}).get('allowed_tools', ['tavily', 'wikipedia', 'weather', 'news', 'politics', 'sports'])}\n\n"
                 f"Iteration: {state.get('iteration', 0)}\n\n"
                 f"Research plan: {research_plan}\n\n"
                 f"Retrieved history context: {retrieval_context}\n\n"
@@ -166,6 +175,7 @@ def build_app():
         "reason_node",
         lambda state: reason_node(state, llm=llm),
     )
+    builder.add_node("evidence_selection_gate_node", evidence_selection_gate_node)
     
     builder.add_node(
         "synthesise_node",
@@ -234,10 +244,12 @@ def build_app():
         route_after_reason,
         {
             "prepare_search_node": "prepare_search_node",
+            "evidence_selection_gate_node": "evidence_selection_gate_node",
             "synthesise_node": "synthesise_node",
         },
     )
 
+    builder.add_edge("evidence_selection_gate_node", "synthesise_node")
     builder.add_edge("synthesise_node", "review_gate_node")
     builder.add_conditional_edges(
         "review_gate_node",

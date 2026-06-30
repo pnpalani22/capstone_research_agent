@@ -26,7 +26,7 @@ The application accepts a research question, evaluates guardrails, checks prior 
 - `app.py`: helpers for starting and resuming LangGraph runs
 - `graph.py`: LangGraph graph definition
 - `nodes.py`: workflow node implementations
-- `tools.py`: Tavily and Wikipedia tool wiring
+- `tools.py`: Tavily, Wikipedia, weather, news, politics, and sports tool wiring
 - `validate_scenarios.py`: scenario runner against the local API
 - `validation_queries.json`: validation suite definitions
 - `frontend.py`: optional Streamlit interface

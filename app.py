@@ -37,17 +37,22 @@ def start_research_run(app, question: str, user_id: str, max_iterations: int, co
     return app.invoke(build_initial_state(question, user_id, max_iterations), config=config)
 
 
-def resume_research_run(app, config: dict[str, Any], decision: str, human_feedback: str = ""):
+def resume_research_run(
+    app,
+    config: dict[str, Any],
+    decision: str,
+    human_feedback: str = "",
+    selected_evidence_ids: list[str] | None = None,
+):
     """Resume an interrupted research run with the chosen decision."""
 
-    resume_value: str | dict[str, str]
+    resume_value: str | dict[str, Any]
+    payload: dict[str, Any] = {"resume": decision}
     if human_feedback.strip():
-        resume_value = {
-            "resume": decision,
-            "human_feedback": human_feedback.strip(),
-        }
-    else:
-        resume_value = decision
+        payload["human_feedback"] = human_feedback.strip()
+    if selected_evidence_ids:
+        payload["selected_evidence_ids"] = list(selected_evidence_ids)
+    resume_value = payload if len(payload) > 1 else decision
 
     return app.invoke(Command(resume=resume_value), config=config)
 

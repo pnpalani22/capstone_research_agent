@@ -17,6 +17,7 @@ from app import (
 )
 from schemas import (
     CreateSessionResponse,
+    EvidenceSelectionInterruptModel,
     HistoryInterruptModel,
     ResumeResearchRequest,
     ReviewInterruptModel,
@@ -59,6 +60,8 @@ def _snapshot_for_thread(thread_id: str) -> RunSnapshotResponse:
         action = interrupt_payload.get("action")
         if action == "review_history_match":
             interrupt = HistoryInterruptModel.model_validate(interrupt_payload)
+        elif action == "select_evidence_for_report":
+            interrupt = EvidenceSelectionInterruptModel.model_validate(interrupt_payload)
         elif action == "review_before_publish":
             interrupt = ReviewInterruptModel.model_validate(interrupt_payload)
         status = "waiting_input"
@@ -79,6 +82,8 @@ def _snapshot_for_thread(thread_id: str) -> RunSnapshotResponse:
         interrupt=interrupt,
         draft_report=state.get("draft_report"),
         search_results=list(state.get("search_results", [])),
+        selected_evidence_ids=list(state.get("selected_evidence_ids", [])),
+        selected_evidence=list(state.get("selected_evidence", [])),
         final_report=state.get("final_report"),
         reused_topic=state.get("reused_topic"),
     )
@@ -118,6 +123,7 @@ def resume_run(request: ResumeResearchRequest) -> RunSnapshotResponse:
         config=_config_for_thread(request.thread_id),
         decision=request.decision,
         human_feedback=request.human_feedback,
+        selected_evidence_ids=request.selected_evidence_ids,
     )
     return _snapshot_for_thread(request.thread_id)
 

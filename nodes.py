@@ -11,7 +11,12 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.store.base import BaseStore
 from langgraph.types import interrupt
 
-from history_store import load_persisted_history, merge_history_records, save_persisted_history
+from history_store import (
+    load_persisted_history,
+    merge_history_records,
+    save_persisted_history,
+    sort_history_records,
+)
 
 from prompts import (
     GUARDRAIL_SYSTEM_PROMPT,
@@ -39,8 +44,88 @@ EVIDENCE_SNIPPET_LIMIT = 620
 MAX_EVIDENCE_ITEMS = 12
 MAX_HISTORY_CHUNKS = 4
 MAX_CHUNKS_PER_SOURCE = 2
-DEFAULT_ALLOWED_TOOLS = ["tavily", "wikipedia"]
+MIN_HISTORY_RELEVANCE_SCORE = 0.32
+DEFAULT_ALLOWED_TOOLS = ["tavily", "wikipedia", "weather", "news", "politics", "sports"]
+DOMAIN_TOOL_KEYWORDS = {
+    "weather": {
+        "weather",
+        "forecast",
+        "temperature",
+        "rain",
+        "humidity",
+        "wind",
+        "storm",
+        "climate",
+        "snow",
+        "storm",
+    },
+    "news": {
+        "news",
+        "headline",
+        "headlines",
+        "breaking",
+        "latest",
+        "update",
+        "updates",
+        "article",
+        "articles",
+        "report",
+        "reports",
+    },
+    "politics": {
+        "politics",
+        "political",
+        "election",
+        "elections",
+        "congress",
+        "senate",
+        "house",
+        "bill",
+        "policy",
+        "government",
+        "parliament",
+        "candidate",
+        "candidates",
+    },
+    "sports": {
+        "sports",
+        "score",
+        "scores",
+        "game",
+        "games",
+        "match",
+        "matches",
+        "standings",
+        "playoff",
+        "playoffs",
+        "league",
+        "team",
+    },
+}
 HIGH_SEVERITY_RISK_FLAGS = {"prompt_injection", "secret_exfiltration", "policy_bypass"}
+HISTORY_STOPWORDS = {
+    "about",
+    "after",
+    "also",
+    "and",
+    "are",
+    "can",
+    "does",
+    "for",
+    "from",
+    "how",
+    "into",
+    "the",
+    "this",
+    "that",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "with",
+}
 QUESTION_RISK_PATTERNS = {
     "prompt_injection": re.compile(r"ignore\s+(all|any|previous)|system\s+prompt|developer\s+message", re.IGNORECASE),
     "secret_exfiltration": re.compile(r"api\s*key|token|password|secret", re.IGNORECASE),
@@ -93,6 +178,19 @@ def _dedupe_text_list(values: list[str]) -> list[str]:
     return deduped
 
 
+def _infer_allowed_tools(question: str) -> list[str]:
+    """Choose domain-specific tools when the question clearly asks for them."""
+
+    normalized = _compact_whitespace(question).lower()
+    allowed = ["tavily", "wikipedia"]
+
+    for tool_name, keywords in DOMAIN_TOOL_KEYWORDS.items():
+        if any(keyword in normalized for keyword in keywords):
+            allowed.append(tool_name)
+
+    return _dedupe_text_list(allowed)
+
+
 def _guardrail_explanation(status: str, risk_flags: list[str], warnings: list[str]) -> str:
     """Generate a concise explanation for the guardrail decision."""
 
@@ -143,7 +241,7 @@ def _assess_question(question: str) -> dict[str, Any]:
         "recommended_action": recommended_action,
         "warnings": _dedupe_text_list(warnings)[:6],
         "risk_flags": _dedupe_text_list(risk_flags)[:5],
-        "allowed_tools": list(DEFAULT_ALLOWED_TOOLS),
+        "allowed_tools": _infer_allowed_tools(sanitized_question),
         "explanation": "",
         "clarifying_question": "Please restate the request as a focused research question with scope and desired outcome." if status == "needs_clarification" else "",
     }
@@ -176,7 +274,7 @@ def _merge_guardrail_state(base: dict[str, Any], evaluation: dict[str, Any]) -> 
         "recommended_action": recommended_action,
         "warnings": _dedupe_text_list(list(base.get("warnings", [])) + list(evaluation.get("warnings", [])))[:6],
         "risk_flags": _dedupe_text_list(list(base.get("risk_flags", [])) + list(evaluation.get("risk_flags", [])))[:5],
-        "allowed_tools": list(dict.fromkeys(list(evaluation.get("allowed_tools", [])) or list(base.get("allowed_tools", DEFAULT_ALLOWED_TOOLS))))[:2],
+        "allowed_tools": list(dict.fromkeys(list(evaluation.get("allowed_tools", [])) or list(base.get("allowed_tools", DEFAULT_ALLOWED_TOOLS))))[:6],
         "explanation": _compact_whitespace(str(evaluation.get("explanation") or base.get("explanation") or "")),
         "clarifying_question": _compact_whitespace(str(evaluation.get("clarifying_question") or base.get("clarifying_question") or "")),
     }
@@ -368,7 +466,7 @@ def _resolve_relevant_history(
 
     by_identity: dict[tuple[str, str], dict[str, Any]] = {}
     by_question: dict[str, dict[str, Any]] = {}
-    for item in past_topics:
+    for item in sort_history_records(past_topics):
         question = str(item.get("question", "")).strip()
         created_at = str(item.get("created_at", "")).strip()
         by_identity[(question, created_at)] = item
@@ -384,8 +482,9 @@ def _resolve_relevant_history(
         question = str(candidate.get("question", "")).strip()
         created_at = str(candidate.get("created_at", "")).strip()
         matched_item = by_identity.get((question, created_at))
-        if matched_item is None and question:
-            matched_item = by_question.get(question)
+        newest_question_match = by_question.get(question) if question else None
+        if newest_question_match is not None:
+            matched_item = newest_question_match
         if matched_item is None:
             continue
 
@@ -416,6 +515,44 @@ def _title_overlap_score(question: str, title: str) -> float:
     """Score how much the query overlaps with the result title."""
 
     return _lexical_overlap_score(question, title)
+
+
+def _history_terms(value: str) -> set[str]:
+    return {
+        term
+        for term in re.findall(r"[a-z0-9]+", value.lower())
+        if len(term) > 1 and term not in HISTORY_STOPWORDS
+    }
+
+
+def _history_relevance_score(question: str, item: dict[str, Any]) -> float:
+    """Score whether a stored history record is close enough to the current question."""
+
+    current_terms = _history_terms(question)
+    item_question = str(item.get("question", "")).strip()
+    report = item.get("report", {})
+    item_text = " ".join(
+        str(part or "")
+        for part in [
+            item_question,
+            report.get("title", ""),
+            report.get("summary", ""),
+        ]
+    )
+    item_terms = _history_terms(item_text)
+
+    if not current_terms or not item_terms:
+        return 0.0
+
+    if _compact_whitespace(question).lower() == _compact_whitespace(item_question).lower():
+        return 1.0
+
+    overlap = len(current_terms & item_terms)
+    precision = overlap / max(len(item_terms), 1)
+    recall = overlap / max(len(current_terms), 1)
+    if precision + recall == 0:
+        return 0.0
+    return (2 * precision * recall) / (precision + recall)
 
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:
@@ -536,6 +673,10 @@ def _score_history_chunks(
 
     candidates: list[dict[str, Any]] = []
     for item in past_topics:
+        history_score = _history_relevance_score(question, item)
+        if history_score < MIN_HISTORY_RELEVANCE_SCORE:
+            continue
+
         report = item.get("report", {})
         combined_text = "\n".join(
             part
@@ -559,6 +700,7 @@ def _score_history_chunks(
                     "chunk_id": f"history-{item.get('created_at', 'na')}-{index}",
                     "question": item.get("question", ""),
                     "created_at": item.get("created_at", ""),
+                    "history_relevance": round(history_score, 4),
                 }
             )
 
@@ -754,6 +896,24 @@ def _summarize_evidence(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines) if lines else "No evidence captured yet."
 
 
+def _select_evidence_by_ids(items: list[dict[str, Any]], selected_ids: list[str]) -> list[dict[str, Any]]:
+    """Return the selected evidence items in the order they appeared in the board."""
+
+    if not selected_ids:
+        return []
+
+    wanted = {str(item).strip() for item in selected_ids if str(item).strip()}
+    if not wanted:
+        return []
+
+    selected: list[dict[str, Any]] = []
+    for item in items:
+        chunk_id = str(item.get("chunk_id", "")).strip()
+        if chunk_id and chunk_id in wanted:
+            selected.append(item)
+    return selected
+
+
 def _build_metrics(
     state: ResearchState,
     *,
@@ -825,6 +985,8 @@ def initialize_run_node(state: ResearchState) -> dict[str, Any]:
         "reused_topic": None,
         "draft_report": None,
         "final_report": None,
+        "selected_evidence_ids": [],
+        "selected_evidence": [],
         "human_feedback": "",
         "review_decision": "",
     }
@@ -837,7 +999,7 @@ def load_history_node(state: ResearchState, *, store: BaseStore) -> dict[str, An
     existing = store.get(namespace, "past_topics")
     in_memory_history = existing.value if existing else []
     persisted_history = load_persisted_history()
-    history = merge_history_records(persisted_history, in_memory_history)
+    history = sort_history_records(merge_history_records(persisted_history, in_memory_history))
 
     if history != in_memory_history:
         store.put(namespace, "past_topics", history)
@@ -869,7 +1031,29 @@ def history_review_node(state: ResearchState, *, llm, embeddings=None) -> dict[s
         }
 
     candidate_history = []
-    for item in past_topics:
+    eligible_history = [
+        item
+        for item in past_topics
+        if _history_relevance_score(state["question"], item) >= MIN_HISTORY_RELEVANCE_SCORE
+    ]
+
+    if not eligible_history:
+        return {
+            "history_review": {
+                "match_type": "new",
+                "rationale": "No prior published research records were relevant to the current question.",
+                "relevant_history": [],
+            },
+            "retrieval_context": [],
+            "run_metrics": _build_metrics(
+                state,
+                retrieval_strategy=retrieval_strategy,
+                history_candidates=0,
+                rerank_metrics=rerank_metrics,
+            ),
+        }
+
+    for item in eligible_history:
         report = item.get("report", {})
         candidate_history.append(
             {
@@ -910,12 +1094,12 @@ def history_review_node(state: ResearchState, *, llm, embeddings=None) -> dict[s
         match_type = "new"
 
     relevant_history = _resolve_relevant_history(
-        past_topics,
+        eligible_history,
         review.get("relevant_history", []),
     )
 
-    if match_type in {"similar", "related"} and not relevant_history and past_topics:
-        relevant_history = past_topics[:1]
+    if match_type in {"similar", "related"} and not relevant_history:
+        match_type = "new"
 
     return {
         "history_review": {
@@ -1020,10 +1204,15 @@ def planner_node(state: ResearchState, *, llm) -> dict[str, Any]:
 
     history_review = state.get("history_review", {})
     use_history = state.get("history_decision", "proceed_with_context") != "start_fresh_plan"
+    force_fresh_replan = state.get("review_decision", "") == "rejected"
     relevant_history = history_review.get("relevant_history", []) if use_history else []
     retrieved_history = state.get("retrieval_context", []) if use_history else []
     reviewer_guidance = state.get("human_feedback", "").strip() or "None"
     guardrails = state.get("guardrails", {})
+
+    if force_fresh_replan:
+        relevant_history = []
+        retrieved_history = []
 
     if relevant_history:
         prior_text = "\n".join(
@@ -1047,12 +1236,14 @@ def planner_node(state: ResearchState, *, llm) -> dict[str, Any]:
                 f"History decision: {state.get('history_decision', 'proceed_with_context')}\n"
                 f"History review match type: {history_review.get('match_type', 'new')}\n"
                 f"History review rationale: {history_review.get('rationale', 'No rationale provided.')}\n\n"
+                f"Replan mode: {'fresh search required' if force_fresh_replan else 'normal'}\n\n"
                 f"Question guardrails: {json.dumps(guardrails, default=str)}\n\n"
                 f"Reviewer guidance for this plan: {reviewer_guidance}\n\n"
                 f"Retrieved history evidence:\n{_summarize_evidence(retrieved_history)}\n\n"
                 f"Relevant prior topics:\n{prior_text}\n\n"
                 "Create a short research plan with 2 to 3 specific search directions. "
-                "If prior work is being used, focus the plan on what should be refreshed, extended, or newly verified."
+                "If prior work is being used, focus the plan on what should be refreshed, extended, or newly verified. "
+                "If this is a fresh re-plan after rejection, ignore prior search results and build a new plan from scratch."
             )
         ),
     ]
@@ -1066,7 +1257,21 @@ def planner_node(state: ResearchState, *, llm) -> dict[str, Any]:
         content = getattr(response, "content", "")
         research_plan = [line.strip("- ") for line in str(content).splitlines() if line.strip()][:3]
 
-    return {"messages": [AIMessage(content=content)], "research_plan": research_plan}
+    update: dict[str, Any] = {"messages": [AIMessage(content=content)], "research_plan": research_plan}
+    if force_fresh_replan:
+        update.update(
+            {
+                "search_results": [],
+                "retrieval_context": [],
+                "selected_evidence_ids": [],
+                "selected_evidence": [],
+                "iteration": 0,
+                "reasoner_decision": "",
+                "draft_report": None,
+                "final_report": None,
+            }
+        )
+    return update
 
 
 def prepare_search_node(state: ResearchState) -> dict[str, Any]:
@@ -1183,15 +1388,72 @@ def route_after_reason(state: ResearchState) -> str:
     """Route either back into the search loop or forward to synthesis."""
 
     if state.get("reasoner_decision", "").upper() == "DONE":
+        if state.get("search_results"):
+            return "evidence_selection_gate_node"
         return "synthesise_node"
 
     return "prepare_search_node"
 
 
+def evidence_selection_gate_node(state: ResearchState) -> dict[str, Any]:
+    """Pause so the user can choose which evidence should drive the report."""
+
+    evidence = list(state.get("search_results", []))[:8]
+    if not evidence:
+        return {
+            "selected_evidence_ids": [],
+            "selected_evidence": [],
+        }
+
+    decision = interrupt(
+        {
+            "action": "select_evidence_for_report",
+            "question": state["question"],
+            "research_plan": list(state.get("research_plan", [])),
+            "current_evidence": evidence,
+            "instructions": (
+                "Select one or more evidence items to use for the report. "
+                "The report synthesis step will use only the selected evidence."
+            ),
+        }
+    )
+
+    selected_ids: list[str] = []
+    if isinstance(decision, dict):
+        raw_ids = (
+            decision.get("selected_evidence_ids")
+            or decision.get("selectedEvidenceIds")
+            or decision.get("selected_chunk_ids")
+            or decision.get("selected_chunk_id")
+            or decision.get("selected_evidence")
+            or []
+        )
+        if isinstance(raw_ids, list):
+            for item in raw_ids:
+                if isinstance(item, dict):
+                    candidate = str(item.get("chunk_id", "")).strip() or str(item.get("title", "")).strip()
+                else:
+                    candidate = str(item).strip()
+                if candidate:
+                    selected_ids.append(candidate)
+        elif isinstance(raw_ids, str) and raw_ids.strip():
+            selected_ids = [raw_ids.strip()]
+
+    selected_evidence = _select_evidence_by_ids(evidence, selected_ids)
+    if not selected_evidence:
+        selected_evidence = evidence[:1]
+        selected_ids = [str(item.get("chunk_id", "")).strip() for item in selected_evidence if str(item.get("chunk_id", "")).strip()]
+
+    return {
+        "selected_evidence_ids": selected_ids,
+        "selected_evidence": selected_evidence,
+    }
+
+
 def synthesise_node(state: ResearchState, *, llm) -> dict[str, Any]:
     """Turn the gathered research context into a structured draft report."""
 
-    search_results = state.get("search_results", [])
+    search_results = state.get("selected_evidence") or state.get("search_results", [])
     retrieved_history = state.get("retrieval_context", [])
     messages_text = []
     for message in state.get("messages", [])[-12:]:
@@ -1206,7 +1468,7 @@ def synthesise_node(state: ResearchState, *, llm) -> dict[str, Any]:
                 f"Research question: {state['question']}\n\n"
                 f"Question guardrails: {json.dumps(state.get('guardrails', {}), default=str)}\n\n"
                 f"Research plan: {json.dumps(state.get('research_plan', []), default=str)}\n\n"
-                f"Accumulated search results: {json.dumps(search_results, default=str)}\n\n"
+                f"Selected evidence for report: {json.dumps(search_results, default=str)}\n\n"
                 f"Retrieved history context: {json.dumps(retrieved_history, default=str)}\n\n"
                 f"Recent research context:\n{chr(10).join(messages_text)}\n\n"
                 f"Return valid JSON with keys: title, findings, sources, confidence, summary. "
@@ -1266,15 +1528,21 @@ def review_gate_node(state: ResearchState):
         return {"review_decision": decision}
 
     if isinstance(decision, dict):
-        update = {
-            "review_decision": decision.get("resume")
-            or decision.get("action")
-            or decision.get("decision")
-            or "",
-        }
+        review_decision = decision.get("resume") or decision.get("action") or decision.get("decision") or ""
         feedback = decision.get("human_feedback") or decision.get("feedback")
         if feedback is not None:
-            update["human_feedback"] = str(feedback)
+            feedback_text = str(feedback)
+        else:
+            feedback_text = ""
+
+        if review_decision == "approved" and feedback_text.strip():
+            review_decision = "edited"
+
+        update = {
+            "review_decision": review_decision,
+        }
+        if feedback_text:
+            update["human_feedback"] = feedback_text
         return update
 
     return {"review_decision": str(decision)}
