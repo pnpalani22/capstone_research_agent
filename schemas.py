@@ -174,7 +174,7 @@ class StartResearchRequest(StrictBaseModel):
     thread_id: str = Field(min_length=1)
     question: str
     user_id: str = Field(min_length=1)
-    max_iterations: int = Field(default=3, ge=1, le=6)
+    max_iterations: int = Field(default=2, ge=1, le=6)
 
     @field_validator("question")
     @classmethod

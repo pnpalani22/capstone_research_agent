@@ -20,10 +20,6 @@ from history_store import (
 
 from prompts import (
     GUARDRAIL_SYSTEM_PROMPT,
-    HISTORY_REVIEW_SYSTEM_PROMPT,
-    PLANNER_SYSTEM_PROMPT,
-    PUBLISH_SYSTEM_PROMPT,
-    REASONER_SYSTEM_PROMPT,
     SYNTHESIS_SYSTEM_PROMPT,
 )
 from schemas import (
@@ -31,20 +27,20 @@ from schemas import (
     FinalReportModel,
     GuardrailEvaluationModel,
     GuardrailStateModel,
-    HistoryReviewModel,
-    PublishedAnswerModel,
-    ReasonerDecisionModel,
-    ResearchPlanModel,
 )
 from state import ResearchState
 
 SUMMARY_CHAR_LIMIT = 240
 QUESTION_CHAR_LIMIT = 600
 EVIDENCE_SNIPPET_LIMIT = 620
-MAX_EVIDENCE_ITEMS = 12
-MAX_HISTORY_CHUNKS = 4
+MAX_EVIDENCE_ITEMS = 8
+MAX_HISTORY_CHUNKS = 3
 MAX_CHUNKS_PER_SOURCE = 2
 MIN_HISTORY_RELEVANCE_SCORE = 0.32
+MAX_SEARCH_RESULTS_FOR_PROMPT = 4
+MAX_HISTORY_ITEMS_FOR_PROMPT = 3
+MIN_REASONER_EVIDENCE_ITEMS = 3
+MIN_REASONER_UNIQUE_SOURCES = 2
 DEFAULT_ALLOWED_TOOLS = ["tavily", "wikipedia", "weather", "news", "politics", "sports"]
 DOMAIN_TOOL_KEYWORDS = {
     "weather": {
@@ -126,6 +122,21 @@ HISTORY_STOPWORDS = {
     "why",
     "with",
 }
+QUESTION_STOPWORDS = HISTORY_STOPWORDS | {
+    "about",
+    "analysis",
+    "compare",
+    "comparison",
+    "current",
+    "effect",
+    "effects",
+    "impact",
+    "overview",
+    "research",
+    "study",
+    "topic",
+    "using",
+}
 QUESTION_RISK_PATTERNS = {
     "prompt_injection": re.compile(r"ignore\s+(all|any|previous)|system\s+prompt|developer\s+message", re.IGNORECASE),
     "secret_exfiltration": re.compile(r"api\s*key|token|password|secret", re.IGNORECASE),
@@ -176,6 +187,163 @@ def _dedupe_text_list(values: list[str]) -> list[str]:
         seen.add(item)
         deduped.append(item)
     return deduped
+
+
+def _extract_keywords(value: str, *, limit: int = 6) -> list[str]:
+    """Pull a compact set of search-friendly keywords from free text."""
+
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9]+", _compact_whitespace(value).lower())
+        if len(token) > 2 and token not in QUESTION_STOPWORDS
+    ]
+    return _dedupe_text_list(tokens)[:limit]
+
+
+def _build_local_research_plan(question: str, guardrails: dict[str, Any], relevant_history: list[dict[str, Any]]) -> list[str]:
+    """Create a lightweight 2-3 query plan without another model call."""
+
+    keywords = _extract_keywords(question, limit=6)
+    if not keywords:
+        keywords = _extract_keywords(str(guardrails.get("sanitized_question", question)), limit=6)
+
+    core = " ".join(keywords[:4]) or _sanitize_question(question)
+    if len(core) > 120:
+        core = core[:120].rstrip()
+
+    allowed_tools = {str(item).strip().lower() for item in guardrails.get("allowed_tools", DEFAULT_ALLOWED_TOOLS)}
+    queries: list[str] = []
+
+    if core:
+        queries.append(core)
+        queries.append(f"{core} evidence tradeoffs")
+
+    if relevant_history:
+        prior_topic = _truncate_summary(str(relevant_history[0].get("question", "")), 60)
+        if prior_topic:
+            queries.append(f"{core} update since {prior_topic}")
+
+    if "news" in allowed_tools:
+        queries.append(f"{core} latest news")
+    elif "weather" in allowed_tools:
+        queries.append(f"{core} current conditions")
+    elif "sports" in allowed_tools:
+        queries.append(f"{core} recent results")
+    elif "politics" in allowed_tools:
+        queries.append(f"{core} policy outlook")
+    else:
+        queries.append(f"{core} background context")
+
+    return _dedupe_text_list(queries)[:3]
+
+
+def _build_history_rationale(match_type: str, top_score: float, matched_count: int) -> str:
+    """Generate a short explanation for the local history decision."""
+
+    if match_type == "similar":
+        return f"Prior work is very close to the current question (score {top_score:.2f}, {matched_count} relevant record(s))."
+    if match_type == "related":
+        return f"Prior work overlaps the current question at a moderate level (score {top_score:.2f}, {matched_count} relevant record(s))."
+    return "No prior research record was similar enough to reuse."
+
+
+def _classify_history_locally(
+    question: str,
+    past_topics: list[dict[str, Any]],
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """Pick a history relation without spending a model call on obvious matches."""
+
+    scored_history = [
+        (item, _history_relevance_score(question, item))
+        for item in past_topics
+    ]
+    scored_history = [(item, score) for item, score in scored_history if score >= MIN_HISTORY_RELEVANCE_SCORE]
+    scored_history.sort(key=lambda pair: pair[1], reverse=True)
+
+    if not scored_history:
+        return "new", "No prior published research records were relevant to the current question.", []
+
+    top_item, top_score = scored_history[0]
+    relevant_history = [item for item, _ in scored_history[:MAX_HISTORY_CHUNKS]]
+
+    exact_match = _find_newest_exact_history_match(question, past_topics)
+    if exact_match is not None:
+        if exact_match not in relevant_history:
+            relevant_history.insert(0, exact_match)
+        return "similar", _build_history_rationale("similar", 1.0, len(relevant_history)), relevant_history[:3]
+
+    if top_score >= 0.78:
+        return "similar", _build_history_rationale("similar", top_score, len(relevant_history)), relevant_history[:3]
+
+    if top_score >= 0.48:
+        return "related", _build_history_rationale("related", top_score, len(relevant_history)), relevant_history[:3]
+
+    return "new", _build_history_rationale("new", top_score, len(relevant_history)), []
+
+
+def _decide_reasoner_locally(state: ResearchState) -> tuple[str, str]:
+    """Use simple evidence thresholds to avoid a model call when the answer is obvious."""
+
+    iteration = int(state.get("iteration", 0) or 0)
+    max_iterations = int(state.get("max_iterations", 3) or 3)
+    search_results = list(state.get("search_results", []))
+    unique_sources = len({_source_identity(item) for item in search_results})
+    evidence_count = len(search_results)
+    best_score = max((float(item.get("score", 0.0)) for item in search_results), default=0.0)
+
+    if iteration >= max_iterations:
+        return "DONE", f"Loop guard reached at iteration {iteration}."
+
+    if evidence_count < MIN_REASONER_EVIDENCE_ITEMS:
+        return "CONTINUE", f"Only {evidence_count} evidence item(s) are available so far."
+
+    if unique_sources < MIN_REASONER_UNIQUE_SOURCES and iteration < max_iterations - 1:
+        return "CONTINUE", f"Need broader source coverage before synthesis ({unique_sources} unique source(s))."
+
+    if evidence_count >= 5 and unique_sources >= MIN_REASONER_UNIQUE_SOURCES:
+        return "DONE", f"Enough evidence gathered across {unique_sources} sources."
+
+    if best_score >= 0.72 and unique_sources >= MIN_REASONER_UNIQUE_SOURCES:
+        return "DONE", f"High-signal evidence is available (top score {best_score:.2f})."
+
+    if iteration >= max_iterations - 1 and evidence_count >= MIN_REASONER_EVIDENCE_ITEMS:
+        return "DONE", f"Final iteration reached with {evidence_count} evidence item(s)."
+
+    return "CONTINUE", f"Keep searching to improve source diversity and confidence ({evidence_count} item(s), {unique_sources} source(s))."
+
+
+def _format_final_report(draft_report: dict[str, Any], question: str, human_feedback: str = "") -> str:
+    """Create a concise final report without asking the model to rewrite it."""
+
+    title = draft_report.get("title") or f"Research Report: {question}"
+    summary = _truncate_summary(draft_report.get("summary", ""))
+    if human_feedback.strip():
+        summary = _truncate_summary(f"{summary} Reviewer note: {human_feedback.strip()}")
+
+    findings = [
+        _truncate_summary(str(item), 140)
+        for item in (draft_report.get("findings") or [])[:5]
+        if _compact_whitespace(str(item))
+    ]
+    sources = _normalize_sources(draft_report.get("sources", []))[:4]
+
+    lines = [f"# {title}", "", f"Summary: {summary}"]
+    if findings:
+        lines.append("")
+        lines.append("Key findings:")
+        for item in findings:
+            lines.append(f"- {item}")
+    if sources:
+        lines.append("")
+        lines.append("Sources:")
+        for source in sources:
+            source_title = source.get("title", "Untitled source")
+            source_url = source.get("url", "")
+            lines.append(f"- {source_title}{f' ({source_url})' if source_url else ''}")
+
+    confidence = draft_report.get("confidence", 0.5)
+    lines.extend(["", f"Confidence: {float(confidence):.2f}"])
+    return "\n".join(lines).strip()
 
 
 def _infer_allowed_tools(question: str) -> list[str]:
@@ -732,7 +900,11 @@ def _score_history_chunks(
     embedding_scores = [0.0] * len(candidates)
     strategy = "lexical"
 
-    chunk_embeddings = _embed_texts(embeddings, [item["snippet"] for item in candidates])
+    if embeddings is not None and len(candidates) > MAX_HISTORY_CHUNKS:
+        chunk_embeddings = _embed_texts(embeddings, [item["snippet"] for item in candidates])
+    else:
+        chunk_embeddings = []
+
     if chunk_embeddings:
         try:
             question_embedding = embeddings.embed_query(question)
@@ -865,7 +1037,7 @@ def _dedupe_evidence(items: list[dict[str, Any]], *, query: str = "") -> list[di
             best_by_identity[identity] = item
     deduped = list(best_by_identity.values())
 
-    if query.strip():
+    if query.strip() and len(deduped) > 4:
         deduped = _diversity_rerank(deduped, query=query, limit=len(deduped))
     else:
         deduped.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
@@ -1045,87 +1217,33 @@ def history_review_node(state: ResearchState, *, llm, embeddings=None) -> dict[s
             "run_metrics": _build_metrics(state, retrieval_strategy=retrieval_strategy, history_candidates=0, rerank_metrics=rerank_metrics),
         }
 
-    candidate_history = []
-    eligible_history = [
-        item
-        for item in past_topics
-        if _history_relevance_score(state["question"], item) >= MIN_HISTORY_RELEVANCE_SCORE
-    ]
-
-    if not eligible_history:
-        return {
-            "history_review": {
-                "match_type": "new",
-                "rationale": "No prior published research records were relevant to the current question.",
-                "relevant_history": [],
-            },
-            "retrieval_context": [],
-            "run_metrics": _build_metrics(
-                state,
-                retrieval_strategy=retrieval_strategy,
-                history_candidates=0,
-                rerank_metrics=rerank_metrics,
-            ),
-        }
-
-    for item in eligible_history:
-        report = item.get("report", {})
-        candidate_history.append(
-            {
-                "question": item.get("question", ""),
-                "report_title": report.get("title", ""),
-                "report_summary": report.get("summary", ""),
-                "published_report": report.get("published_report", ""),
-                "user_id": item.get("user_id", ""),
-                "created_at": item.get("created_at", ""),
-            }
-        )
-
-    prompt = [
-        SystemMessage(content=HISTORY_REVIEW_SYSTEM_PROMPT),
-        HumanMessage(
-            content=(
-                f"Current research question: {state['question']}\n\n"
-                f"Top retrieved history evidence:\n{_summarize_evidence(retrieved_history)}\n\n"
-                f"Prior published research records:\n{json.dumps(candidate_history, indent=2)}\n\n"
-                "Return the best assessment."
-            )
-        ),
-    ]
-
-    try:
-        review_model = llm.with_structured_output(HistoryReviewModel).invoke(prompt)
-        review = review_model.model_dump()
-    except Exception:
-        review = {
-            "match_type": "related" if candidate_history else "new",
-            "rationale": "Could not parse structured history review output.",
-            "relevant_history": [],
-        }
-
-    allowed_match_types = {"similar", "related", "new"}
-    match_type = review.get("match_type", "new")
-    if match_type not in allowed_match_types:
-        match_type = "new"
+    eligible_history = [item for item in past_topics if _history_relevance_score(state["question"], item) >= MIN_HISTORY_RELEVANCE_SCORE]
+    match_type, rationale, relevant_history = _classify_history_locally(state["question"], eligible_history)
+    if not relevant_history:
+        exact_reuse_candidate = _find_newest_exact_history_match(state["question"], past_topics)
+        if exact_reuse_candidate is not None:
+            relevant_history = [exact_reuse_candidate]
+            match_type = "similar"
+            rationale = "Found an exact prior question match, so the current run can reuse the closest prior context."
 
     relevant_history = _resolve_relevant_history(
         eligible_history,
-        review.get("relevant_history", []),
+        [
+            {
+                "question": item.get("question", ""),
+                "created_at": item.get("created_at", ""),
+            }
+            for item in relevant_history
+        ],
     )
-    exact_reuse_candidate = _find_newest_exact_history_match(state["question"], past_topics)
-
-    if exact_reuse_candidate is not None and not relevant_history:
-        relevant_history = [exact_reuse_candidate]
-        if match_type == "new":
-            match_type = "similar"
-
     if match_type in {"similar", "related"} and not relevant_history:
         match_type = "new"
+        rationale = "No prior research record was similar enough to reuse."
 
     return {
         "history_review": {
             "match_type": match_type,
-            "rationale": str(review.get("rationale", "")),
+            "rationale": rationale,
             "relevant_history": relevant_history[:3],
         },
         "retrieval_context": retrieved_history,
@@ -1235,62 +1353,19 @@ def reuse_existing_report_node(state: ResearchState) -> dict[str, Any]:
 
 
 def planner_node(state: ResearchState, *, llm) -> dict[str, Any]:
-    """Create an initial planning message for the research process."""
+    """Create a lightweight plan without spending an extra model call."""
 
     history_review = state.get("history_review", {})
     use_history = state.get("history_decision", "proceed_with_context") != "start_fresh_plan"
     force_fresh_replan = state.get("review_decision", "") == "rejected"
     relevant_history = history_review.get("relevant_history", []) if use_history else []
-    retrieved_history = state.get("retrieval_context", []) if use_history else []
-    reviewer_guidance = state.get("human_feedback", "").strip() or "None"
     guardrails = state.get("guardrails", {})
 
     if force_fresh_replan:
         relevant_history = []
-        retrieved_history = []
 
-    if relevant_history:
-        prior_text = "\n".join(
-            (
-                f"- Question: {item.get('question', 'Unknown topic')}\n"
-                f"  Prior report title: {item.get('report', {}).get('title', 'Unknown title')}\n"
-                f"  Prior report summary: {item.get('report', {}).get('summary', 'No summary available')}\n"
-                f"  Created at: {item.get('created_at', 'Unknown date')}\n"
-                f"  User: {item.get('user_id', 'Unknown user')}"
-            )
-            for item in relevant_history
-        )
-    else:
-        prior_text = "No closely relevant prior topics were identified."
-
-    prompt = [
-        SystemMessage(content=PLANNER_SYSTEM_PROMPT),
-        HumanMessage(
-            content=(
-                f"Research question: {state['question']}\n\n"
-                f"History decision: {state.get('history_decision', 'proceed_with_context')}\n"
-                f"History review match type: {history_review.get('match_type', 'new')}\n"
-                f"History review rationale: {history_review.get('rationale', 'No rationale provided.')}\n\n"
-                f"Replan mode: {'fresh search required' if force_fresh_replan else 'normal'}\n\n"
-                f"Question guardrails: {json.dumps(guardrails, default=str)}\n\n"
-                f"Reviewer guidance for this plan: {reviewer_guidance}\n\n"
-                f"Retrieved history evidence:\n{_summarize_evidence(retrieved_history)}\n\n"
-                f"Relevant prior topics:\n{prior_text}\n\n"
-                "Create a short research plan with 2 to 3 specific search directions. "
-                "If prior work is being used, focus the plan on what should be refreshed, extended, or newly verified. "
-                "If this is a fresh re-plan after rejection, ignore prior search results and build a new plan from scratch."
-            )
-        ),
-    ]
-
-    try:
-        plan = llm.with_structured_output(ResearchPlanModel).invoke(prompt)
-        research_plan = list(plan.queries)
-        content = "\n".join(f"- {query}" for query in research_plan)
-    except Exception:
-        response = llm.invoke(prompt)
-        content = getattr(response, "content", "")
-        research_plan = [line.strip("- ") for line in str(content).splitlines() if line.strip()][:3]
+    research_plan = _build_local_research_plan(state["question"], guardrails, relevant_history)
+    content = "\n".join(f"- {query}" for query in research_plan)
 
     update: dict[str, Any] = {"messages": [AIMessage(content=content)], "research_plan": research_plan}
     if force_fresh_replan:
@@ -1370,52 +1445,15 @@ def capture_tool_results_node(state: ResearchState, config) -> dict[str, Any]:
 def reason_node(state: ResearchState, *, llm) -> dict[str, Any]:
     """Decide whether more research is needed or synthesis can begin."""
 
-    iteration = state.get("iteration", 0)
-    max_iterations = state.get("max_iterations", 3)
+    iteration = int(state.get("iteration", 0) or 0)
+    max_iterations = int(state.get("max_iterations", 3) or 3)
 
+    reasoner_decision, reason = _decide_reasoner_locally(state)
     if iteration >= max_iterations:
-        return {
-            "reasoner_decision": "DONE",
-            "messages": [
-                AIMessage(
-                    content=(
-                        f"DONE: The loop guard has been reached at iteration {iteration}. "
-                        "Proceed to synthesis."
-                    )
-                )
-            ],
-        }
+        reasoner_decision = "DONE"
+        reason = f"The loop guard has been reached at iteration {iteration}."
 
-    recent_context = []
-    for message in state.get("messages", [])[-8:]:
-        if isinstance(message, ToolMessage) or getattr(message, "tool_calls", None):
-            continue
-        content = getattr(message, "content", "")
-        if isinstance(content, str) and content.strip():
-            recent_context.append(content)
-
-    search_results = state.get("search_results", [])[-6:]
-    prompt = [
-        SystemMessage(content=REASONER_SYSTEM_PROMPT),
-        HumanMessage(
-            content=(
-                f"Research question: {state['question']}\n\n"
-                f"Question guardrails: {json.dumps(state.get('guardrails', {}), default=str)}\n\n"
-                f"Captured evidence: {json.dumps(search_results, indent=2, default=str)}\n\n"
-                f"Recent context:\n{chr(10).join(recent_context)}"
-            )
-        ),
-    ]
-
-    try:
-        decision = llm.with_structured_output(ReasonerDecisionModel).invoke(prompt)
-        content = f"{decision.decision}: {decision.reason}"
-        reasoner_decision = decision.decision
-    except Exception:
-        response = llm.invoke(prompt)
-        content = getattr(response, "content", "")
-        reasoner_decision = "DONE" if "DONE" in content.upper() else "CONTINUE"
-
+    content = f"{reasoner_decision}: {reason}"
     return {"messages": [AIMessage(content=content)], "reasoner_decision": reasoner_decision}
 
 
@@ -1488,24 +1526,18 @@ def evidence_selection_gate_node(state: ResearchState) -> dict[str, Any]:
 def synthesise_node(state: ResearchState, *, llm) -> dict[str, Any]:
     """Turn the gathered research context into a structured draft report."""
 
-    search_results = state.get("selected_evidence") or state.get("search_results", [])
+    search_results = (state.get("selected_evidence") or state.get("search_results", []))[:MAX_SEARCH_RESULTS_FOR_PROMPT]
     retrieved_history = state.get("retrieval_context", [])
-    messages_text = []
-    for message in state.get("messages", [])[-12:]:
-        content = getattr(message, "content", "")
-        if isinstance(content, str) and content.strip():
-            messages_text.append(content)
 
     prompt = [
         SystemMessage(content=SYNTHESIS_SYSTEM_PROMPT),
         HumanMessage(
             content=(
                 f"Research question: {state['question']}\n\n"
-                f"Question guardrails: {json.dumps(state.get('guardrails', {}), default=str)}\n\n"
-                f"Research plan: {json.dumps(state.get('research_plan', []), default=str)}\n\n"
-                f"Selected evidence for report: {json.dumps(search_results, default=str)}\n\n"
-                f"Retrieved history context: {json.dumps(retrieved_history, default=str)}\n\n"
-                f"Recent research context:\n{chr(10).join(messages_text)}\n\n"
+                f"Question guardrails: {json.dumps({k: state.get('guardrails', {}).get(k) for k in ('status', 'recommended_action', 'allowed_tools', 'risk_flags')}, default=str)}\n\n"
+                f"Research plan: {json.dumps(state.get('research_plan', [])[:3], default=str)}\n\n"
+                f"Selected evidence:\n{_summarize_evidence(search_results)}\n\n"
+                f"Relevant history:\n{_summarize_evidence(retrieved_history[:MAX_HISTORY_ITEMS_FOR_PROMPT])}\n\n"
                 f"Return valid JSON with keys: title, findings, sources, confidence, summary. "
                 f"Keep summary under {SUMMARY_CHAR_LIMIT} characters."
             )
@@ -1600,30 +1632,8 @@ def apply_edit_node(state: ResearchState) -> dict[str, Any]:
 def publish_node(state: ResearchState, *, llm) -> dict[str, Any]:
     """Produce the final polished user-facing report."""
 
-    prompt = [
-        SystemMessage(content=PUBLISH_SYSTEM_PROMPT),
-        HumanMessage(
-            content=(
-                f"Research question: {state['question']}\n\n"
-                f"Research plan: {json.dumps(state.get('research_plan', []), default=str)}\n\n"
-                f"Draft report:\n{json.dumps(state['draft_report'], indent=2)}\n\n"
-                f"Evidence digest:\n{_summarize_evidence(state.get('search_results', []))}\n\n"
-                f"Human feedback: {state.get('human_feedback', 'None')}\n\n"
-                "Produce the final polished report."
-            )
-        ),
-    ]
-
-    try:
-        published = llm.with_structured_output(PublishedAnswerModel).invoke(prompt)
-        published_report = published.published_report
-        message = AIMessage(content=published_report)
-    except Exception:
-        response = llm.invoke(prompt)
-        published_report = response.content
-        message = response
-
     draft_report = state["draft_report"]
+    published_report = _format_final_report(draft_report, state["question"], state.get("human_feedback", ""))
     final_report = FinalReportModel.model_validate(
         {
             "title": draft_report.get("title", f"Research Report: {state['question']}"),
@@ -1640,7 +1650,7 @@ def publish_node(state: ResearchState, *, llm) -> dict[str, Any]:
     return {
         "final_report": final_report,
         "run_metrics": _build_metrics(next_state),
-        "messages": [message],
+        "messages": [AIMessage(content=published_report)],
     }
 
 

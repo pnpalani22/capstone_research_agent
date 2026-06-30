@@ -85,23 +85,22 @@ def _build_search_messages(state: ResearchState):
     """Build a clean tool-calling prompt without replaying old tool-call history."""
 
     research_plan = state.get("research_plan", [])
-    search_results = state.get("search_results", [])[-6:]
-    retrieval_context = state.get("retrieval_context", [])[:3]
+    search_results = state.get("search_results", [])[-4:]
+    retrieval_context = state.get("retrieval_context", [])[:2]
 
     return [
         SystemMessage(
             content=(
-                "You are a research search assistant. Use the available tools when useful. "
-                "Prefer high-signal searches, diversify sources, and avoid repeating the same query unless it closes a clear evidence gap."
+                "You are a research search assistant. Use at most one tool call. "
+                "Prefer high-signal searches, diversify sources, and avoid repeating a query unless it clearly closes an evidence gap."
             )
         ),
         HumanMessage(
             content=(
                 f"Research question: {state['question']}\n\n"
-                f"Question guardrails: {state.get('guardrails', {})}\n\n"
                 f"Allowed tools: {state.get('guardrails', {}).get('allowed_tools', ['tavily', 'wikipedia', 'weather', 'news', 'politics', 'sports'])}\n\n"
                 f"Iteration: {state.get('iteration', 0)}\n\n"
-                f"Research plan: {research_plan}\n\n"
+                f"Research plan: {research_plan[:3]}\n\n"
                 f"Retrieved history context: {retrieval_context}\n\n"
                 f"Prior search results: {search_results}\n\n"
                 "Choose the next best search action. Only call a tool from the allowed tools list."

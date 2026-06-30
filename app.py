@@ -93,7 +93,7 @@ def main():
         app,
         question=question,
         user_id=user_id,
-        max_iterations=3,
+        max_iterations=2,
         config=config,
     )
 

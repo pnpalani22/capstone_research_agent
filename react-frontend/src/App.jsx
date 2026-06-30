@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createSession, resumeRun, startRun, translateText } from './api'
 
 const languagePreferenceKey = 'research-ui-language'
 const prosodyPreferenceKey = 'research-ui-prosody'
+const voiceStylePreferenceKey = 'research-ui-voice-style'
+const voiceSelectionPreferenceKey = 'research-ui-voice-selection'
 const recentLanguagesPreferenceKey = 'research-ui-recent-languages'
 
 const languageOptions = [
@@ -54,6 +56,15 @@ const prosodyOptions = [
   { code: 'energetic', label: 'Energetic', rate: 1.08, pitch: 1.12, volume: 1, helper: 'Livelier voice for showcases or quick updates.' },
   { code: 'narration', label: 'Narration', rate: 0.84, pitch: 0.96, volume: 0.98, helper: 'Slower storytelling cadence for detailed summaries.' },
   { code: 'empathetic', label: 'Empathetic', rate: 0.92, pitch: 1.06, volume: 0.94, helper: 'Gentler tone for sensitive or explanatory content.' },
+]
+
+const voiceStyleOptions = [
+  { code: 'auto', label: 'Auto', helper: 'Use the closest installed voice for the selected language.' },
+  { code: 'feminine', label: 'Female / Feminine', helper: 'Best-effort selection of a warmer, female-leaning installed voice.' },
+  { code: 'masculine', label: 'Male / Masculine', helper: 'Best-effort selection of a deeper, male-leaning installed voice.' },
+  { code: 'youthful', label: 'Youthful / Boyish', helper: 'Best-effort selection of a lighter, younger-sounding installed voice.' },
+  { code: 'mature', label: 'Mature / Elder', helper: 'Best-effort selection of a more seasoned, narrator-like installed voice.' },
+  { code: 'neutral', label: 'Neutral', helper: 'Prefer a steady, less character-driven installed voice.' },
 ]
 
 function readStoredPreference(key, allowedOptions, fallbackValue) {
@@ -131,6 +142,118 @@ function selectMatchingVoice(voices, languageConfig) {
     ?? voices.find((voice) => requestedTags.some((tag) => String(voice.lang || '').toLowerCase().startsWith(tag)))
     ?? voices.find((voice) => requestedTags.some((tag) => tag.startsWith(String(voice.lang || '').toLowerCase())))
     ?? null
+}
+
+function normalizeVoiceText(value) {
+  return String(value ?? '').toLowerCase()
+}
+
+function scoreVoiceStyle(voice, styleCode) {
+  const haystack = [
+    voice.name,
+    voice.voiceURI,
+    voice.lang,
+  ]
+    .map(normalizeVoiceText)
+    .join(' ')
+
+  const styleKeywords = {
+    feminine: ['female', 'woman', 'girl', 'samantha', 'victoria', 'zira', 'anna', 'emma', 'olivia', 'sophia', 'bella', 'nina', 'lisa', 'karen'],
+    masculine: ['male', 'man', 'boy', 'david', 'daniel', 'george', 'michael', 'alex', 'john', 'tom', 'paul', 'mark', 'james', 'ryan'],
+    youthful: ['youth', 'young', 'kid', 'teen', 'junior', 'boy', 'girl', 'child'],
+    mature: ['mature', 'senior', 'elder', 'old', 'grand', 'narrator', 'professor'],
+    neutral: ['neutral', 'standard', 'default'],
+  }
+
+  const keywords = styleKeywords[styleCode] ?? []
+  if (!keywords.length) {
+    return 0
+  }
+
+  return keywords.reduce((score, keyword) => score + (haystack.includes(keyword) ? 1 : 0), 0)
+}
+
+function selectStyledVoice(voices, languageConfig, styleCode) {
+  if (!voices.length || !languageConfig) {
+    return null
+  }
+
+  const languageMatches = voices.filter((voice) => {
+    const requestedTags = [languageConfig.voice, ...(languageConfig.voiceFallbacks ?? []), languageConfig.code]
+      .filter(Boolean)
+      .map((value) => String(value).toLowerCase())
+    const voiceLang = String(voice.lang || '').toLowerCase()
+    return requestedTags.includes(voiceLang)
+      || requestedTags.some((tag) => voiceLang.startsWith(tag))
+      || requestedTags.some((tag) => tag.startsWith(voiceLang))
+  })
+
+  const basePool = languageMatches.length ? languageMatches : voices
+
+  if (styleCode === 'auto') {
+    return selectMatchingVoice(voices, languageConfig)
+  }
+
+  const ranked = [...basePool].sort((left, right) => scoreVoiceStyle(right, styleCode) - scoreVoiceStyle(left, styleCode))
+  const bestStyledVoice = ranked.find((voice) => scoreVoiceStyle(voice, styleCode) > 0)
+  return bestStyledVoice ?? selectMatchingVoice(basePool, languageConfig) ?? basePool[0] ?? null
+}
+
+function inferVoiceDescriptor(voice) {
+  const name = normalizeVoiceText(voice?.name)
+  const code = normalizeVoiceText(voice?.lang)
+  const text = `${name} ${code}`
+
+  if (/female|woman|girl|samantha|victoria|zira|anna|emma|olivia|sophia|bella|nina|lisa|karen/.test(text)) {
+    return 'female'
+  }
+  if (/male|man|boy|david|daniel|george|michael|alex|john|tom|paul|mark|james|ryan/.test(text)) {
+    return 'male'
+  }
+  if (/young|youth|kid|teen|junior|boy|girl|child/.test(text)) {
+    return 'youthful'
+  }
+  if (/mature|senior|elder|old|grand|narrator|professor/.test(text)) {
+    return 'mature'
+  }
+  return 'neutral'
+}
+
+function labelVoiceDescriptor(descriptor) {
+  switch (descriptor) {
+    case 'female':
+      return 'Female / Feminine'
+    case 'male':
+      return 'Male / Masculine'
+    case 'youthful':
+      return 'Youthful / Boyish'
+    case 'mature':
+      return 'Mature / Elder'
+    default:
+      return 'Neutral'
+  }
+}
+
+function voiceStyleCodeFromDescriptor(descriptor) {
+  switch (descriptor) {
+    case 'female':
+      return 'feminine'
+    case 'male':
+      return 'masculine'
+    case 'youthful':
+      return 'youthful'
+    case 'mature':
+      return 'mature'
+    default:
+      return 'neutral'
+  }
+}
+
+function formatVoiceLabel(voice) {
+  const descriptor = inferVoiceDescriptor(voice)
+  const name = voice?.name || 'Installed voice'
+  const lang = voice?.lang ? ` (${voice.lang})` : ''
+  return `${labelVoiceDescriptor(descriptor)} | ${name}${lang}`
 }
 
 function escapePdfText(value) {
@@ -310,11 +433,22 @@ function App() {
   const [translationError, setTranslationError] = useState('')
   const [speakingLanguage, setSpeakingLanguage] = useState('')
   const [selectedProsody, setSelectedProsody] = useState(() => readStoredPreference(prosodyPreferenceKey, prosodyOptions, 'balanced'))
+  const [selectedVoiceStyle, setSelectedVoiceStyle] = useState(() => readStoredPreference(voiceStylePreferenceKey, voiceStyleOptions, 'auto'))
+  const [selectedVoiceURI, setSelectedVoiceURI] = useState(() => {
+    if (typeof window === 'undefined') {
+      return ''
+    }
+
+    return window.localStorage.getItem(voiceSelectionPreferenceKey) || ''
+  })
+  const [voiceSearchQuery, setVoiceSearchQuery] = useState('')
   const [recentLanguages, setRecentLanguages] = useState(() => readStoredLanguageHistory())
   const [isProsodyCustomized, setIsProsodyCustomized] = useState(false)
   const [availableVoices, setAvailableVoices] = useState([])
   const [reportPreviewOpen, setReportPreviewOpen] = useState(false)
   const [selectedEvidenceId, setSelectedEvidenceId] = useState('')
+  const activeUtteranceRef = useRef(null)
+  const stopSpeechRequestedRef = useRef(false)
   const interrupt = snapshot.interrupt
   const finalReport = snapshot.final_report
   const draftReport = interrupt?.action === 'review_before_publish' ? interrupt.draft : snapshot.draft_report
@@ -340,6 +474,7 @@ function App() {
           : 'Intake'
   const selectedLanguageMeta = languageOptions.find((option) => option.code === selectedLanguage) ?? languageOptions[0]
   const selectedProsodyMeta = prosodyOptions.find((option) => option.code === selectedProsody) ?? prosodyOptions[0]
+  const selectedVoiceStyleMeta = voiceStyleOptions.find((option) => option.code === selectedVoiceStyle) ?? voiceStyleOptions[0]
   const reportSpeechText = selectedLanguage === 'en' ? finalReport?.published_report ?? '' : translatedReport
   const recommendedProsodyCode = inferRecommendedProsody(finalReport?.published_report ?? '')
   const recommendedProsodyMeta = prosodyOptions.find((option) => option.code === recommendedProsodyCode) ?? prosodyOptions[0]
@@ -350,6 +485,45 @@ function App() {
   const hasMatchingVoice = Boolean(matchingVoice)
   const hasSpeechSynthesis = typeof window !== 'undefined' && 'speechSynthesis' in window
   const finalReportPublishMode = isReusedResult ? 'Reused institutional memory' : 'Fresh synthesis run'
+  const visibleVoiceOptions = availableVoices
+    .filter((voice) => {
+      const requestedTags = [selectedLanguageMeta.voice, ...(selectedLanguageMeta.voiceFallbacks ?? []), selectedLanguageMeta.code]
+        .filter(Boolean)
+        .map((value) => String(value).toLowerCase())
+      const voiceLang = String(voice.lang || '').toLowerCase()
+      return requestedTags.includes(voiceLang)
+        || requestedTags.some((tag) => voiceLang.startsWith(tag))
+        || requestedTags.some((tag) => tag.startsWith(voiceLang))
+    })
+    .map((voice) => ({
+      ...voice,
+      descriptor: inferVoiceDescriptor(voice),
+      label: formatVoiceLabel(voice),
+    }))
+  const filteredVoiceOptions = visibleVoiceOptions.filter((voice) => {
+    const query = normalizeVoiceText(voiceSearchQuery).trim()
+    if (!query) {
+      return true
+    }
+
+    return [
+      voice.name,
+      voice.voiceURI,
+      voice.lang,
+      voice.descriptor,
+      voice.label,
+    ]
+      .map(normalizeVoiceText)
+      .some((item) => item.includes(query))
+  })
+  const groupedVoiceOptions = [
+    { label: 'Female / Feminine', voices: filteredVoiceOptions.filter((voice) => voice.descriptor === 'female') },
+    { label: 'Male / Masculine', voices: filteredVoiceOptions.filter((voice) => voice.descriptor === 'male') },
+    { label: 'Youthful / Boyish', voices: filteredVoiceOptions.filter((voice) => voice.descriptor === 'youthful') },
+    { label: 'Mature / Elder', voices: filteredVoiceOptions.filter((voice) => voice.descriptor === 'mature') },
+    { label: 'Neutral', voices: filteredVoiceOptions.filter((voice) => voice.descriptor === 'neutral') },
+  ].filter((group) => group.voices.length)
+  const selectedVoiceOption = visibleVoiceOptions.find((voice) => voice.voiceURI === selectedVoiceURI) ?? null
   const speechCapabilityByLanguage = languageOptions.reduce((capabilities, option) => {
     capabilities[option.code] = Boolean(selectMatchingVoice(availableVoices, option))
     return capabilities
@@ -414,6 +588,18 @@ function App() {
   }, [selectedProsody])
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(voiceStylePreferenceKey, selectedVoiceStyle)
+    }
+  }, [selectedVoiceStyle])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(voiceSelectionPreferenceKey, selectedVoiceURI)
+    }
+  }, [selectedVoiceURI])
+
+  useEffect(() => {
     if (!finalReport?.published_report) {
       return
     }
@@ -432,8 +618,17 @@ function App() {
   }, [selectedLanguage])
 
   useEffect(() => {
-    setIsProsodyCustomized(false)
-  }, [snapshot.final_report?.published_report])
+    if (!visibleVoiceOptions.length) {
+      return
+    }
+
+    if (!selectedVoiceURI || !visibleVoiceOptions.some((voice) => voice.voiceURI === selectedVoiceURI)) {
+      const bestVoice = selectStyledVoice(visibleVoiceOptions, selectedLanguageMeta, selectedVoiceStyle)
+      if (bestVoice?.voiceURI) {
+        setSelectedVoiceURI(bestVoice.voiceURI)
+      }
+    }
+  }, [visibleVoiceOptions, selectedLanguageMeta, selectedVoiceStyle, selectedVoiceURI])
 
   useEffect(() => {
     if (evidenceSelectionInterrupt) {
@@ -543,9 +738,11 @@ function App() {
 
     const selectedOption = languageOptions.find((option) => option.code === languageCode)
     const prosody = prosodyOptions.find((option) => option.code === selectedProsody) ?? prosodyOptions[0]
+    const voiceStyle = voiceStyleOptions.find((option) => option.code === selectedVoiceStyle) ?? voiceStyleOptions[0]
     const utterance = new SpeechSynthesisUtterance(text)
     const voiceTag = selectedOption?.voice ?? selectedOption?.code ?? 'en-US'
-    const matchedVoice = selectedOption ? selectMatchingVoice(availableVoices, selectedOption) : null
+    const exactVoice = availableVoices.find((voice) => voice.voiceURI === selectedVoiceURI) ?? null
+    const matchedVoice = exactVoice ?? (selectedOption ? selectStyledVoice(availableVoices, selectedOption, voiceStyle.code) : null)
 
     utterance.lang = voiceTag
     utterance.rate = prosody.rate
@@ -556,9 +753,19 @@ function App() {
       utterance.lang = matchedVoice.lang
     }
 
-    utterance.onend = () => setSpeakingLanguage('')
-    utterance.onerror = () => setSpeakingLanguage('')
+    utterance.onend = () => {
+      if (!stopSpeechRequestedRef.current) {
+        setSpeakingLanguage('')
+      }
+      activeUtteranceRef.current = null
+    }
+    utterance.onerror = () => {
+      activeUtteranceRef.current = null
+      setSpeakingLanguage('')
+    }
 
+    stopSpeechRequestedRef.current = false
+    activeUtteranceRef.current = utterance
     window.speechSynthesis.cancel()
     setSpeakingLanguage(languageCode)
     window.speechSynthesis.speak(utterance)
@@ -573,8 +780,21 @@ function App() {
       return
     }
 
+    stopSpeechRequestedRef.current = true
+    activeUtteranceRef.current = null
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+      window.speechSynthesis.pause()
+    }
     window.speechSynthesis.cancel()
     setSpeakingLanguage('')
+  }
+
+  function handleVoiceSelection(nextVoiceURI) {
+    setSelectedVoiceURI(nextVoiceURI)
+    const matching = visibleVoiceOptions.find((voice) => voice.voiceURI === nextVoiceURI)
+    if (matching) {
+      setSelectedVoiceStyle(voiceStyleCodeFromDescriptor(inferVoiceDescriptor(matching)))
+    }
   }
 
   function handleDownloadReportPdf() {
@@ -1141,10 +1361,72 @@ function App() {
                       {isProsodyCustomized ? ' | manual override active' : ' | auto-applied'}
                     </p>
                   </div>
+                  <div className="translation-control">
+                    <label className="field-label" htmlFor="speech-voice-style">Voice style</label>
+                    <select
+                      id="speech-voice-style"
+                      value={selectedVoiceStyle}
+                      onChange={(event) => setSelectedVoiceStyle(event.target.value)}
+                    >
+                      {voiceStyleOptions.map((option) => (
+                        <option key={option.code} value={option.code}>{option.label}</option>
+                      ))}
+                    </select>
+                    <p className="control-helper">{selectedVoiceStyleMeta.helper}</p>
+                    <p className="control-helper accent-helper">
+                      Voice selection is best-effort because installed browser voices vary by device and OS.
+                    </p>
+                  </div>
+                  <div className="translation-control">
+                    <label className="field-label" htmlFor="speech-voice-choice">Installed voice</label>
+                    <label className="field-label" htmlFor="speech-voice-search">Search voices</label>
+                    <input
+                      id="speech-voice-search"
+                      type="search"
+                      value={voiceSearchQuery}
+                      onChange={(event) => setVoiceSearchQuery(event.target.value)}
+                      placeholder="Search installed voices"
+                    />
+                    <p className="control-helper">Type part of a voice name, language code, or style to narrow the list.</p>
+                    <select
+                      id="speech-voice-choice"
+                      value={selectedVoiceURI}
+                      onChange={(event) => handleVoiceSelection(event.target.value)}
+                      disabled={!filteredVoiceOptions.length}
+                    >
+                      <option value="">Auto-select the best available voice</option>
+                      {groupedVoiceOptions.map((group) => (
+                        <optgroup key={group.label} label={`${group.label} (${group.voices.length})`}>
+                          {group.voices.map((voice) => (
+                            <option key={voice.voiceURI || `${voice.name}-${voice.lang}`} value={voice.voiceURI}>
+                              {voice.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                    <p className="control-helper">
+                      {selectedVoiceOption
+                        ? `Selected installed voice: ${selectedVoiceOption.name}`
+                        : 'No installed voice override selected yet.'}
+                    </p>
+                    <p className="control-helper accent-helper">
+                      If the browser has multiple voices, choose the exact one here for the most predictable playback.
+                    </p>
+                    {voiceSearchQuery ? (
+                      <button
+                        type="button"
+                        className="ghost-button compact-action-button"
+                        onClick={() => setVoiceSearchQuery('')}
+                      >
+                        Clear voice search
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
                 {translationError ? <p className="inline-note danger">{translationError}</p> : null}
                 <div className="translated-copy-card">
-                  <span className="micro-label">{selectedLanguageMeta.label} output | {selectedProsodyMeta.label} tone</span>
+                  <span className="micro-label">{selectedLanguageMeta.label} output | {selectedProsodyMeta.label} tone | {selectedVoiceStyleMeta.label} voice | {selectedVoiceOption ? selectedVoiceOption.name : 'auto voice'}</span>
                   <p className="published-copy">
                     {translationLoading
                       ? `Translating the answer into ${selectedLanguageMeta.label}...`
@@ -1153,6 +1435,8 @@ function App() {
                   <div className="selection-summary-row">
                     <span className="selection-pill">Language: {selectedLanguageMeta.label}</span>
                     <span className="selection-pill">Tone: {selectedProsodyMeta.label}</span>
+                    <span className="selection-pill">Voice: {selectedVoiceStyleMeta.label}</span>
+                    <span className="selection-pill">{selectedVoiceOption ? selectedVoiceOption.name : 'Auto voice'}</span>
                   </div>
                 </div>
               </article>
