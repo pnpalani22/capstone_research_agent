@@ -19,6 +19,7 @@ const searchResultSchema = {
     title: nonEmptyString,
     url: { type: 'string' },
     snippet: nonEmptyString,
+    full_snippet: { type: 'string' },
     score: { type: 'number', minimum: 0, maximum: 1 },
     source_type: nonEmptyString,
     chunk_id: nonEmptyString,

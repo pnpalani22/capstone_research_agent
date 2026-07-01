@@ -1,0 +1,17 @@
+# Maven target directory
+/target/
+
+# IntelliJ IDEA
+/.idea/
+*.iml
+
+# VS Code settings
+.vscode/
+
+# Eclipse
+.project
+.classpath
+.settings/
+
+# MacOS
+.DS_Store

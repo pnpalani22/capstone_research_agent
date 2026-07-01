@@ -1215,7 +1215,7 @@ function App() {
                           <span className="score-pill">{Math.round(item.score * 100)}%</span>
                         </div>
                         <h4>{item.url ? <a href={item.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>{item.title}</a> : item.title}</h4>
-                        <p>{item.snippet}</p>
+                        <p>{item.full_snippet?.trim() ? item.full_snippet : item.snippet}</p>
                         <div className="micro-label">{item.tool_name}</div>
                       </article>
                     )
@@ -1229,7 +1229,7 @@ function App() {
                     </div>
                     {selectedEvidenceItem ? (
                       <>
-                        <p className="muted-copy">{selectedEvidenceItem.snippet}</p>
+                        <p className="muted-copy">{selectedEvidenceItem.full_snippet?.trim() ? selectedEvidenceItem.full_snippet : selectedEvidenceItem.snippet}</p>
                         <div className="selection-summary-row">
                           <span className="selection-pill">{selectedEvidenceItem.tool_name}</span>
                           <span className="selection-pill">{selectedEvidenceItem.source_type}</span>
