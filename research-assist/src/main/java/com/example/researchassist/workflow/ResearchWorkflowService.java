@@ -280,9 +280,6 @@ public class ResearchWorkflowService {
         if (!tavilyConfig.isEnabled()) {
             allowed.remove("tavily");
         }
-        if (normalized.contains("weather") || normalized.contains("forecast") || normalized.contains("temperature") || normalized.contains("rain") || normalized.contains("humidity") || normalized.contains("wind") || normalized.contains("storm") || normalized.contains("snow")) {
-            allowed.add("weather");
-        }
         return new ArrayList<>(allowed);
     }
 

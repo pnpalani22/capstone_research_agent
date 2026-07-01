@@ -63,15 +63,32 @@ HISTORY_STOPWORDS = {
     "also",
     "and",
     "are",
+    "at",
+    "be",
+    "by",
     "can",
+    "could",
+    "do",
     "does",
     "for",
     "from",
     "how",
+    "if",
+    "in",
     "into",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "should",
+    "that",
     "the",
     "this",
-    "that",
+    "to",
+    "under",
+    "was",
+    "were",
     "what",
     "when",
     "where",
@@ -79,6 +96,8 @@ HISTORY_STOPWORDS = {
     "who",
     "why",
     "with",
+    "will",
+    "would",
     "language",
     "languages",
     "model",
@@ -759,7 +778,9 @@ def _history_relevance_score(question: str, item: dict[str, Any]) -> float:
         score = max(score, 0.42)
 
     strong_shared_terms = {
-        term for term in current_terms & item_terms if len(term) >= 5 and term not in {"process", "processing", "understanding", "context"}
+        term for term in current_terms & item_terms
+        if len(term) >= 5
+        and term not in {"process", "processing", "understanding", "context", "question", "answer", "research", "study"}
     }
     if strong_shared_terms:
         score = max(score, 0.6)
@@ -1247,13 +1268,16 @@ def history_review_node(state: ResearchState, *, llm, embeddings=None) -> dict[s
         }
 
     eligible_history = [item for item in past_topics if _history_relevance_score(state["question"], item) >= MIN_HISTORY_RELEVANCE_SCORE]
-    match_type, rationale, relevant_history = _classify_history_locally(state["question"], eligible_history)
-    if not relevant_history:
-        exact_reuse_candidate = _find_newest_exact_history_match(state["question"], past_topics)
-        if exact_reuse_candidate is not None:
-            relevant_history = [exact_reuse_candidate]
-            match_type = "similar"
-            rationale = "Found an exact prior question match, so the current run can reuse the closest prior context."
+    exact_reuse_candidate = _find_newest_exact_history_match(state["question"], past_topics)
+
+    if exact_reuse_candidate is not None:
+        match_type = "similar"
+        rationale = "Found an exact prior question match, so the current run can reuse the closest prior context."
+        relevant_history = [exact_reuse_candidate]
+    else:
+        match_type = "new"
+        rationale = "No exact prior question match was found, so this run will start fresh without reusing prior history."
+        relevant_history = []
 
     relevant_history = _resolve_relevant_history(
         eligible_history,
@@ -1275,11 +1299,11 @@ def history_review_node(state: ResearchState, *, llm, embeddings=None) -> dict[s
             "rationale": rationale,
             "relevant_history": relevant_history[:3],
         },
-        "retrieval_context": retrieved_history,
+        "retrieval_context": retrieved_history if match_type == "similar" else [],
         "run_metrics": _build_metrics(
             state,
             retrieval_strategy=retrieval_strategy,
-            history_candidates=len(retrieved_history),
+            history_candidates=len(retrieved_history) if match_type == "similar" else 0,
             rerank_metrics=rerank_metrics,
         ),
     }
