@@ -1317,7 +1317,7 @@ def history_review_gate_node(state: ResearchState) -> dict[str, Any]:
     relevant_history = history_review.get("relevant_history", [])
     reuse_candidate = _find_newest_exact_history_match(state["question"], state.get("past_topics", []))
 
-    if match_type == "new" or not relevant_history:
+    if match_type == "new" or not relevant_history or reuse_candidate is None:
         return {"history_decision": "proceed_with_context"}
 
     matches = []

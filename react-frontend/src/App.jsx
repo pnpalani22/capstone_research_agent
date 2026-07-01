@@ -467,6 +467,7 @@ function App() {
   const [selectedEvidenceId, setSelectedEvidenceId] = useState('')
   const activeUtteranceRef = useRef(null)
   const stopSpeechRequestedRef = useRef(false)
+  const autoResumeHistoryRef = useRef(false)
   const interrupt = snapshot.interrupt
   const finalReport = snapshot.final_report
   const draftReport = interrupt?.action === 'review_before_publish' ? interrupt.draft : snapshot.draft_report
@@ -618,6 +619,17 @@ function App() {
   }, [selectedVoiceURI])
 
   useEffect(() => {
+    if (!interrupt || !autoResumeHistoryRef.current) {
+      return
+    }
+
+    if (interrupt.action === 'review_history_match' && !interrupt.reuse_allowed) {
+      void handleResume('proceed_with_context')
+      autoResumeHistoryRef.current = false
+    }
+  }, [interrupt?.action, interrupt?.reuse_allowed])
+
+  useEffect(() => {
     if (!finalReport?.published_report) {
       return
     }
@@ -718,17 +730,15 @@ function App() {
     event.preventDefault()
     setLoading(true)
     setError('')
-    setSnapshot((currentSnapshot) => ({
-      ...defaultSnapshot,
-      thread_id: currentSnapshot.thread_id,
-      question,
-      user_id: userId,
-      max_iterations: Number(maxIterations),
-    }))
+
+    const session = await createSession()
+    const effectiveThreadId = session.thread_id
+    autoResumeHistoryRef.current = true
+    setSnapshot({ ...defaultSnapshot, thread_id: effectiveThreadId })
 
     try {
       const nextSnapshot = await startRun({
-        thread_id: threadId,
+        thread_id: effectiveThreadId,
         question,
         user_id: userId,
         max_iterations: Number(maxIterations),
@@ -1081,7 +1091,7 @@ function App() {
             )}
           </section>
 
-          {interrupt?.action === 'review_history_match' ? (
+          {interrupt?.action === 'review_history_match' && interrupt.reuse_allowed ? (
             <section className="panel decision-panel">
               <div className="section-heading compact">
                 <p className="eyebrow">Checkpoint</p>
@@ -1113,11 +1123,7 @@ function App() {
                   </button>
                 ) : null}
               </div>
-              {interrupt.reuse_allowed ? (
-                <p className="inline-note">Reuse is limited to the newest exact question match.</p>
-              ) : (
-                <p className="inline-note">There is no exact question match here, so reuse stays disabled.</p>
-              )}
+              <p className="inline-note">Reuse is limited to the newest exact question match.</p>
             </section>
           ) : null}
 

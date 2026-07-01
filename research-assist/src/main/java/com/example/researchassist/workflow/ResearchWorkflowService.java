@@ -346,11 +346,12 @@ public class ResearchWorkflowService {
         Map<String, Object> historyReview = getMap(state.get("history_review"));
         String matchType = String.valueOf(historyReview.getOrDefault("match_type", "new"));
         List<Map<String, Object>> relevantHistory = getList(historyReview.get("relevant_history"));
-        if ("new".equals(matchType) || relevantHistory.isEmpty()) {
+        Map<String, Object> reuseCandidate = findReuseCandidate(state.get("question"), getList(state.get("past_topics")));
+        if (reuseCandidate == null) {
             state.put("history_decision", "proceed_with_context");
             return;
         }
-        Map<String, Object> reuseCandidate = findReuseCandidate(state.get("question"), getList(state.get("past_topics")));
+
         List<Map<String, Object>> matches = relevantHistory.stream()
                 .map(item -> {
                     Map<String, Object> report = getMap(item.get("report"));
@@ -370,20 +371,16 @@ public class ResearchWorkflowService {
         interrupt.put("match_type", matchType);
         interrupt.put("rationale", historyReview.getOrDefault("rationale", ""));
         interrupt.put("matches", matches);
-        interrupt.put("reuse_allowed", reuseCandidate != null);
-        if (reuseCandidate != null) {
-            Map<String, Object> report = getMap(reuseCandidate.get("report"));
-            interrupt.put("reuse_candidate", Map.of(
-                    "question", reuseCandidate.getOrDefault("question", ""),
-                    "published_report", report.getOrDefault("published_report", ""),
-                    "title", report.getOrDefault("title", ""),
-                    "summary", report.getOrDefault("summary", ""),
-                    "user_id", reuseCandidate.getOrDefault("user_id", ""),
-                    "created_at", reuseCandidate.getOrDefault("created_at", "")
-            ));
-        } else {
-            interrupt.put("reuse_candidate", null);
-        }
+        interrupt.put("reuse_allowed", true);
+        Map<String, Object> report = getMap(reuseCandidate.get("report"));
+        interrupt.put("reuse_candidate", Map.of(
+                "question", reuseCandidate.getOrDefault("question", ""),
+                "published_report", report.getOrDefault("published_report", ""),
+                "title", report.getOrDefault("title", ""),
+                "summary", report.getOrDefault("summary", ""),
+                "user_id", reuseCandidate.getOrDefault("user_id", ""),
+                "created_at", reuseCandidate.getOrDefault("created_at", "")
+        ));
         state.put("interrupt", interrupt);
         state.put("history_decision", "review_history_match");
     }
